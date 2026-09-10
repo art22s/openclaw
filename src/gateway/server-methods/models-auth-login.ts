@@ -110,6 +110,11 @@ export const modelsAuthLoginHandlers: GatewayRequestHandlers = {
             beforePersistentEffect: () => {
               signal.throwIfAborted();
               assertCurrent();
+              runner.lockCancellationForPreparation();
+            },
+            beforeModelAccessWrite: () => {
+              signal.throwIfAborted();
+              assertCurrent();
               runner.lockCancellation();
             },
             refreshAfterLogin: (agentId) =>

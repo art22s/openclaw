@@ -1,175 +1,30 @@
-// Tests Telegram native Codex login command behavior.
-import {
-  createEmptyPluginRegistry,
-  withPluginRuntimeRegistryScope,
-} from "openclaw/plugin-sdk/channel-test-helpers";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import {
   type ModelsAuthLoginFlowOptions,
-  type ModelsAuthLoginFlowResult,
   ProviderAuthConfigApplyError,
 } from "openclaw/plugin-sdk/provider-auth-login-flow-runtime";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import type { SessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { TelegramNativeCommandDeps } from "./bot-native-command-deps.runtime.js";
-import { createTelegramGroupCommandContext } from "./bot-native-commands.fixture-test-support.js";
-import { registerTelegramNativeCommands } from "./bot-native-commands.js";
+// Register shared mocks before importing the login runtime values.
 import {
-  createCommandBot,
+  createLoginResult,
+  createOwnerLoginConfig,
+  loginSessionMocks,
+  registerLoginCommand,
+  resetLoginCommandMocks,
+  type TelegramLoginFlow,
+} from "./bot-native-command-login.test-support.js";
+import { createTelegramGroupCommandContext } from "./bot-native-commands.fixture-test-support.js";
+import {
   deliverReplies,
-  createNativeCommandTestParams,
   createPrivateCommandContext,
-  resetNativeCommandMenuMocks,
 } from "./bot-native-commands.menu-test-support.js";
 import { telegramBotInfoForTest } from "./bot.create-telegram-bot.test-support.js";
 
-const loginSessionMocks = vi.hoisted(() => ({
-  getSessionEntry: vi.fn(),
-  loadSessionStore: vi.fn(),
-  resolveStorePath: vi.fn(),
-  patchSessionEntry: vi.fn(),
-}));
-
-vi.mock("./bot-native-commands.runtime.js", () => ({
-  ensureConfiguredBindingRouteReady: vi.fn(async () => ({ ok: true })),
-  finalizeInboundContext: vi.fn((ctx: unknown) => ctx),
-  getAgentScopedMediaLocalRoots: vi.fn(() => []),
-  getSessionEntry: loginSessionMocks.getSessionEntry,
-  resolveChunkMode: vi.fn(() => "length"),
-  resolveThreadSessionKeys: vi.fn(
-    ({
-      baseSessionKey,
-      parentSessionKey,
-    }: {
-      baseSessionKey: string;
-      parentSessionKey?: string;
-    }) => ({
-      sessionKey: baseSessionKey,
-      parentSessionKey,
-    }),
-  ),
-}));
-vi.mock("openclaw/plugin-sdk/session-store-runtime", async () => {
-  const actual = await vi.importActual<typeof import("openclaw/plugin-sdk/session-store-runtime")>(
-    "openclaw/plugin-sdk/session-store-runtime",
-  );
-  return {
-    ...actual,
-    getSessionEntry: loginSessionMocks.getSessionEntry,
-    resolveStorePath: loginSessionMocks.resolveStorePath,
-    patchSessionEntry: loginSessionMocks.patchSessionEntry,
-  };
-});
-
-type LoginFlowMock = ReturnType<typeof vi.fn>;
-type TelegramLoginFlow = NonNullable<TelegramNativeCommandDeps["runModelsAuthLoginFlow"]>;
-
-let loginAccountIndex = 0;
-
-function createLoginResult(
-  profileId: string,
-  authRefresh: ModelsAuthLoginFlowResult["authRefresh"] = "refreshed",
-): ModelsAuthLoginFlowResult {
-  return {
-    providerId: "openai",
-    methodId: "device-code",
-    authRefresh,
-    profiles: [{ profileId, provider: "openai", mode: "oauth" }],
-  };
-}
-
-function createOwnerLoginConfig(): OpenClawConfig {
-  return {
-    commands: { native: true, ownerAllowFrom: ["200"] },
-    agents: { list: [{ id: "main", default: true }] },
-  };
-}
-
-function registerLoginCommand(params: {
-  cfg: OpenClawConfig;
-  loginFlow: LoginFlowMock;
-  accountId?: string;
-  allowFrom?: string[];
-  abortSignal?: AbortSignal;
-  runtime?: RuntimeEnv;
-  getRuntimeConfig?: () => OpenClawConfig;
-}) {
-  const botHarness = createCommandBot();
-  const accountId = params.accountId ?? `login-test-${++loginAccountIndex}`;
-  const cfg = {
-    ...params.cfg,
-    agents: {
-      ...params.cfg.agents,
-      defaults: { model: "openai/gpt-5.4", ...params.cfg.agents?.defaults },
-    },
-  };
-  const nativeParams = createNativeCommandTestParams(cfg, {
-    accountId,
-    bot: botHarness.bot,
-    allowFrom: params.allowFrom ?? ["200"],
-    ...(params.abortSignal
-      ? {
-          opts: {
-            token: "token",
-            accountAbortSignal: params.abortSignal,
-          },
-        }
-      : {}),
-    ...(params.runtime ? { runtime: params.runtime } : {}),
-  });
-  const sendMessageTelegram = vi.fn(async (_to, text) => {
-    const result = await botHarness.bot.api.sendMessage(100, text, {});
-    return { messageId: String(result.message_id), chatId: "100" };
-  });
-  const nativeCommandCallbackDispatcher = withPluginRuntimeRegistryScope(
-    createEmptyPluginRegistry(),
-    () =>
-      registerTelegramNativeCommands({
-        ...nativeParams,
-        telegramDeps: {
-          ...nativeParams.telegramDeps,
-          ...(params.getRuntimeConfig ? { getRuntimeConfig: params.getRuntimeConfig } : {}),
-          runModelsAuthLoginFlow: params.loginFlow,
-          sendMessageTelegram,
-        } as never,
-      }),
-  );
-  const handler = botHarness.commandHandlers.get("login");
-  if (!handler) {
-    throw new Error("expected login command handler to be registered");
-  }
-  return {
-    ...botHarness,
-    accountId,
-    handler,
-    nativeCommandCallbackDispatcher,
-    sendMessageTelegram,
-  };
-}
-
 describe("registerTelegramNativeCommands /login", () => {
-  beforeEach(() => {
-    resetNativeCommandMenuMocks();
-    loginSessionMocks.loadSessionStore.mockReset().mockReturnValue({});
-    loginSessionMocks.getSessionEntry
-      .mockReset()
-      .mockImplementation(
-        ({ storePath, sessionKey }: { storePath: string; sessionKey: string }) =>
-          loginSessionMocks.loadSessionStore(storePath)[sessionKey],
-      );
-    loginSessionMocks.resolveStorePath.mockReset().mockReturnValue("/tmp/openclaw-sessions.json");
-    loginSessionMocks.patchSessionEntry.mockReset().mockImplementation(async (params) => {
-      const current = loginSessionMocks.loadSessionStore(params.storePath)[params.sessionKey];
-      if (!current) {
-        return null;
-      }
-      const patch = await params.update({ ...current });
-      params.assertCommitAllowed?.();
-      return patch ? { ...current, ...patch } : current;
-    });
-  });
+  beforeEach(resetLoginCommandMocks);
 
   it("delivers the core provider menu and its method continuation without starting login", async () => {
     const loginFlow = vi.fn();
@@ -397,6 +252,109 @@ describe("registerTelegramNativeCommands /login", () => {
       ),
     );
   });
+
+  it.each(["all", "keep"])(
+    "completes deferred %s consent through a fresh dispatcher",
+    async (choice) => {
+      const accepted = vi.fn();
+      loginSessionMocks.completeModelAccess.mockImplementation(
+        async (
+          params: Parameters<
+            typeof import("../../../src/commands/models/auth-model-policy.js").completeProviderModelAccess
+          >[0],
+        ) => {
+          if (!params.prepared) {
+            throw new Error("expected model access request");
+          }
+          accepted(await params.prompter.select(params.prepared.prompt));
+        },
+      );
+      const loginFlow = vi.fn(async (params: ModelsAuthLoginFlowOptions) => {
+        await params.prompter.deviceCode?.({ title: "Sign in", code: "MODEL-ACCESS" });
+        if (!params.onModelAccessRequested) {
+          throw new Error("expected deferred model access");
+        }
+        params.onModelAccessRequested({
+          provider: "openai",
+          providerLabel: "OpenAI",
+          agentId: "main",
+          policy: { path: "agents.defaults.modelPolicy.allow", refs: ["openai/gpt-5.4"] },
+          prompt: {
+            message: "Credentials saved. Your current model restrictions may hide OpenAI models.",
+            initialValue: "keep",
+            options: [
+              { value: "all", label: "Show all OpenAI models" },
+              { value: "keep", label: "Keep current restrictions" },
+            ],
+          },
+        });
+        return createLoginResult("openai:consent");
+      });
+      const cfg = createOwnerLoginConfig();
+      const first = registerLoginCommand({ cfg, loginFlow });
+      await first.handler(createPrivateCommandContext({ match: "codex", userId: 200 }));
+      await vi.waitFor(() => expect(deliverReplies).toHaveBeenCalled());
+      const delivery = vi.mocked((await import("./bot/delivery.replies.js")).deliverReplies);
+      const buttons = delivery.mock.calls
+        .at(-1)?.[0]
+        .replies[0]?.presentation?.blocks.find((block) => block.type === "buttons");
+      expect(buttons).toMatchObject({
+        buttons: [
+          {
+            label: "Show all OpenAI models",
+            action: { type: "command", command: expect.stringMatching(/^\/login choice /) },
+          },
+          {
+            label: "Keep current restrictions",
+            action: { type: "command", command: expect.stringMatching(/^\/login choice /) },
+          },
+        ],
+      });
+      const button = buttons?.buttons[choice === "all" ? 0 : 1];
+      if (button?.action?.type !== "command") {
+        throw new Error("expected typed command button");
+      }
+      const commandText = button.action.command;
+      expect(accepted).not.toHaveBeenCalled();
+      const fresh = registerLoginCommand({ cfg, loginFlow, accountId: first.accountId });
+      const dispatch = fresh.nativeCommandCallbackDispatcher;
+      if (!dispatch) {
+        throw new Error("expected native callback dispatcher");
+      }
+      let callbackId = 0;
+      const click = (chatId: number) =>
+        dispatch({
+          commandText,
+          botUser: telegramBotInfoForTest,
+          callbackQuery: {
+            id: `model-access-${++callbackId}`,
+            chat_instance: "private-chat",
+            from: { id: 200, is_bot: false, first_name: "Owner" },
+            message: {
+              message_id: 101,
+              date: 1,
+              chat: { id: chatId, type: "private", first_name: "Owner" },
+            },
+          },
+        });
+      await click(101);
+      expect(accepted).not.toHaveBeenCalled();
+      await click(100);
+      expect(accepted).toHaveBeenCalledExactlyOnceWith(choice);
+      expect(fresh.sendMessage).toHaveBeenLastCalledWith(
+        100,
+        expect.stringContaining(
+          choice === "all"
+            ? "All OpenAI models are now visible."
+            : "Current model restrictions kept.",
+        ),
+        {},
+      );
+      await click(100);
+      expect(accepted).toHaveBeenCalledOnce();
+      expect(loginFlow).toHaveBeenCalledOnce();
+    },
+  );
 
   it("rejects group /login codex without sending the device code publicly", async () => {
     const loginFlow = vi.fn(async (params: ModelsAuthLoginFlowOptions) => {

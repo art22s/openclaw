@@ -40,7 +40,6 @@ import type { ConfigFileSnapshot, OpenClawConfig } from "../../config/types.open
 import { isRemoteEnvironment } from "../../infra/remote-env.js";
 import {
   applyProviderAuthConfigPatch,
-  applyDefaultModel,
   pickAuthMethod,
   restorePriorAgentsDefaultsModelUnlessOptIn,
   resolveProviderMatch,
@@ -78,6 +77,13 @@ import {
   resolveDefaultTokenProfileId,
   validateOpenAICodexApiKeyInput,
 } from "./auth-manual-input.js";
+import {
+  applyProviderLoginDefaultModel,
+  completeProviderModelAccess,
+  prepareProviderModelAccess,
+  withoutProviderModelPolicy,
+  type PreparedProviderModelAccess,
+} from "./auth-model-policy.js";
 import { refreshRunningGatewayAuthState, type ModelAuthRefreshOutcome } from "./auth-refresh.js";
 import {
   loadValidConfigSnapshotOrThrow,
@@ -415,9 +421,13 @@ async function persistProviderAuthResult(params: {
     ? createMergePatch(
         loginConfig,
         restorePriorAgentsDefaultsModelUnlessOptIn({
-          cfg: applyProviderAuthConfigPatch(loginConfig, params.result.configPatch, {
-            replaceDefaultModels: params.result.replaceDefaultModels,
-          }),
+          cfg: applyProviderAuthConfigPatch(
+            loginConfig,
+            withoutProviderModelPolicy(params.result.configPatch, loginConfig),
+            {
+              replaceDefaultModels: params.result.replaceDefaultModels,
+            },
+          ),
           priorAgentsDefaultsModel: loginConfig.agents?.defaults?.model,
           setDefault: params.setDefault,
         }),
@@ -478,7 +488,7 @@ async function persistProviderAuthResult(params: {
             setDefault: params.setDefault,
           });
           if (params.setDefault && defaultModel) {
-            next = applyDefaultModel(next, defaultModel);
+            next = applyProviderLoginDefaultModel(next, defaultModel);
           }
           return next;
         },
@@ -609,6 +619,8 @@ async function runProviderAuthMethod(params: {
   openUrl?: (url: string) => Promise<void>;
   beforePersistentEffect?: () => void | Promise<void>;
   refreshAfterLogin?: ModelsAuthLoginFlowOptions["refreshAfterLogin"];
+  onModelAccessRequested?: (request: PreparedProviderModelAccess) => void;
+  beforeModelAccessWrite?: () => void;
 }): Promise<{
   result: ProviderAuthResult;
   profiles: ProviderAuthResult["profiles"];
@@ -616,6 +628,12 @@ async function runProviderAuthMethod(params: {
 }> {
   params.signal?.throwIfAborted();
   params.assertCurrent?.();
+  const modelAccess = prepareProviderModelAccess({
+    config: params.config,
+    agentId: params.agentId,
+    provider: params.provider.id,
+    providerLabel: params.provider.label,
+  });
   const result = await params.method.run({
     config: params.config,
     credentialOnly: params.credentialOnly,
@@ -675,6 +693,21 @@ async function runProviderAuthMethod(params: {
     beforePersistentEffect: params.beforePersistentEffect,
     refreshAfterLogin: params.refreshAfterLogin,
   });
+  if (persistedProfiles.length > 0) {
+    await completeProviderModelAccess({
+      prepared: modelAccess,
+      prompter: params.prompter,
+      onRequested: params.onModelAccessRequested,
+      beforeCommit: params.beforeModelAccessWrite,
+      runtime: params.runtime,
+      assertCurrent: () => {
+        params.signal?.throwIfAborted();
+        params.assertCurrent?.();
+      },
+    }).catch((error: unknown) => {
+      throw new ProviderAuthConfigApplyError(error);
+    });
+  }
   return { result: connectionResult, profiles: persistedProfiles, authRefresh };
 }
 
@@ -999,6 +1032,8 @@ export type ModelsAuthLoginFlowOptions = LoginOptions & {
   config?: OpenClawConfig;
   runtime: RuntimeEnv;
   prompter: WizardPrompter;
+  onModelAccessRequested?: (request: PreparedProviderModelAccess) => void;
+  beforeModelAccessWrite?: () => void;
   env?: NodeJS.ProcessEnv;
   isRemote?: boolean;
   signal?: AbortSignal;
@@ -1143,6 +1178,12 @@ export async function runModelsAuthLoginFlowCore(
     );
   }
 
+  const modelAccess = prepareProviderModelAccess({
+    config: context.config,
+    agentId: context.agentId,
+    provider: selectedProvider.id,
+    providerLabel: selectedProvider.label,
+  });
   const imported =
     !opts.credentialOnly && !opts.force && !opts.profileId && !opts.setDefault
       ? await tryImportProviderCredential({
@@ -1177,6 +1218,19 @@ export async function runModelsAuthLoginFlowCore(
     opts.runtime.log(
       `Auth profile: ${imported.profileId} (${imported.provider}/${imported.mode}, imported)`,
     );
+    await completeProviderModelAccess({
+      prepared: modelAccess,
+      prompter,
+      onRequested: opts.onModelAccessRequested,
+      beforeCommit: opts.beforeModelAccessWrite,
+      runtime: opts.runtime,
+      assertCurrent: () => {
+        opts.signal?.throwIfAborted();
+        opts.assertCurrent?.();
+      },
+    }).catch((error: unknown) => {
+      throw new ProviderAuthConfigApplyError(error);
+    });
     return {
       providerId: selectedProvider.id,
       methodId: chosenMethod.id,
@@ -1242,6 +1296,8 @@ export async function runModelsAuthLoginFlowCore(
     openUrl: opts.openUrl,
     beforePersistentEffect: opts.beforePersistentEffect,
     refreshAfterLogin: opts.refreshAfterLogin,
+    onModelAccessRequested: opts.onModelAccessRequested,
+    beforeModelAccessWrite: opts.beforeModelAccessWrite,
   });
   maybeLogOpenAICodexNativeSearchTip(opts.runtime, selectedProvider.id);
   return {

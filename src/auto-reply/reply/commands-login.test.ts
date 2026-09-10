@@ -1,4 +1,6 @@
+import fs from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { prepareProviderModelAccess } from "../../commands/models/auth-model-policy.js";
 import type { ModelsAuthLoginFlowOptions } from "../../commands/models/auth.js";
 import {
   clearRuntimeConfigSnapshot,
@@ -11,6 +13,7 @@ import {
   ProviderAuthConfigApplyError,
   ProviderCredentialsSavedError,
 } from "../../shared/provider-auth-result.js";
+import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { buildBuiltinChatCommands } from "../commands-registry.shared.js";
 import type { HandleCommandsParams } from "./commands-types.js";
 import { buildCommandTestParams } from "./commands.test-harness.js";
@@ -126,6 +129,69 @@ describe("handleLoginCommand", () => {
   });
 
   afterEach(() => clearRuntimeConfigSnapshot());
+
+  it.each([
+    ["Show all OpenAI models", ["other/current", "openai/*"], "All OpenAI models are now visible."],
+    ["Keep current restrictions", ["other/current"], "Current model restrictions kept."],
+  ])("finishes login before applying %s from a fresh command", async (label, allow, outcome) => {
+    await withOpenClawTestState({ label: "login-command-consent" }, async (state) => {
+      const params = buildLoginParams("/login codex", { opts: blockReplyOpts() });
+      params.cfg.agents = {
+        defaults: { model: "other/current", modelPolicy: { allow: ["other/current"] } },
+        entries: { main: { workspace: state.workspaceDir } },
+      };
+      await state.writeConfig(params.cfg);
+      const prepared = prepareProviderModelAccess({
+        config: params.cfg,
+        agentId: "main",
+        provider: "openai",
+        providerLabel: "OpenAI",
+      });
+      if (!prepared) {
+        throw new Error("Expected restricted-provider consent");
+      }
+      runModelsAuthLoginFlowMock.mockImplementationOnce(
+        async (opts: ModelsAuthLoginFlowOptions) => {
+          opts.onModelAccessRequested?.(prepared);
+          return {
+            providerId: "openai",
+            methodId: "device-code",
+            authRefresh: "refreshed",
+            profiles: [{ profileId: "openai:new", provider: "openai", mode: "oauth" }],
+          };
+        },
+      );
+      const login = await handleLoginCommand(params, true);
+      expect(login?.shouldContinue).toBe(false);
+      const button = login?.reply?.presentation?.blocks
+        .flatMap((block) => (block.type === "buttons" ? block.buttons : []))
+        .find((entry) => entry.label === label);
+      if (button?.action?.type !== "command") {
+        throw new Error("Expected returned consent buttons");
+      }
+      const command = button.action.command;
+      const wrongSession = await handleLoginCommand(
+        buildLoginParams(command, { sessionKey: "agent:main:other" }),
+        true,
+      );
+      expect(wrongSession?.reply?.text).toContain("no longer available");
+      const denied = await handleLoginCommand(
+        buildLoginParams(command, { command: { senderIsOwner: false } }),
+        true,
+      );
+      expect(denied?.reply?.text).toContain("Only a configured OpenClaw owner/admin");
+      const unchanged: OpenClawConfig = JSON.parse(await fs.readFile(state.configPath, "utf8"));
+      expect(unchanged.agents?.defaults?.modelPolicy?.allow).toEqual(["other/current"]);
+      const result = await handleLoginCommand(buildLoginParams(command), true);
+      expect(result?.reply?.text).toContain(outcome);
+      const saved: OpenClawConfig = JSON.parse(await fs.readFile(state.configPath, "utf8"));
+      expect(saved.agents?.defaults?.modelPolicy?.allow).toEqual(allow);
+      expect(saved.agents?.defaults?.model).toBe("other/current");
+      const duplicate = await handleLoginCommand(buildLoginParams(command), true);
+      expect(duplicate?.reply?.text).toContain("no longer available");
+      expect(runModelsAuthLoginFlowMock).toHaveBeenCalledOnce();
+    });
+  });
 
   it.each(["host", "runtime"])(
     "rejects an owner revoked before flow entry using the %s config reader",
