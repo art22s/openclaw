@@ -103,31 +103,31 @@ export async function completeProviderModelAccess(params: {
   prepared: ReturnType<typeof prepareProviderModelAccess>;
   prompter: Pick<WizardPrompter, "select">;
   runtime: RuntimeEnv;
-  assertCurrent?: () => void;
+  assertCurrent?: (config?: OpenClawConfig) => void;
   onRequested?: (request: PreparedProviderModelAccess) => void;
   beforeCommit?: () => void;
-}): Promise<void> {
+}): Promise<string> {
   const prepared = params.prepared;
   if (!prepared) {
-    return;
+    return "";
   }
   params.assertCurrent?.();
   if (params.onRequested) {
     params.onRequested(prepared);
-    return;
+    return "";
   }
   const choice = await params.prompter.select(prepared.prompt);
   params.assertCurrent?.();
   if (choice !== "all") {
     params.runtime.log("Credentials saved. Current model restrictions kept.");
-    return;
+    return "Current model restrictions kept.";
   }
   const application = createRuntimeConfigWriteApplication(
     captureGatewayRootWorkAdmissionContinuationScope()?.run,
   );
   await updateConfig(
     (config) => {
-      params.assertCurrent?.();
+      params.assertCurrent?.(config);
       resolveModelsTargetAgent(config, prepared.agentId, { kind: "mutation" });
       if (!isDeepStrictEqual(snapshotPolicy(config, prepared.agentId), prepared.policy)) {
         throw new Error("Model restrictions changed during sign-in. Choose model access again.");
@@ -166,7 +166,11 @@ export async function completeProviderModelAccess(params: {
     throw new Error("The running Gateway did not apply the saved model restrictions.");
   }
   logConfigUpdated(params.runtime);
-  params.runtime.log(`Credentials saved. All ${prepared.providerLabel} models are now visible.`);
+  const message = application.claimed
+    ? `All ${prepared.providerLabel} models are now visible.`
+    : "Model access saved. Application by the running Gateway is not confirmed. Run `openclaw gateway restart` to apply it.";
+  params.runtime.log(`Credentials saved. ${message}`);
+  return message;
 }
 
 export type PreparedProviderModelAccess = NonNullable<

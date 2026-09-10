@@ -256,17 +256,17 @@ export async function answerProviderLoginModelAccess(params: {
   command: string;
   runtime: RuntimeEnv;
   signal?: AbortSignal;
-  assertCurrent: () => void;
+  assertCurrent: (config?: OpenClawConfig) => void;
 }): Promise<ProviderLoginReply | undefined> {
   const record = params.flows.get(params.flowKey);
   const pending = record?.pendingModelAccess;
   if (!record || !pending || record.signal.aborted || record.expiresAt <= Date.now()) {
     return undefined;
   }
-  const assertCurrent = () => {
+  const assertCurrent = (config?: OpenClawConfig) => {
     params.signal?.throwIfAborted();
     record.signal.throwIfAborted();
-    params.assertCurrent();
+    params.assertCurrent(config);
     if (params.flows.get(params.flowKey) !== record) {
       throw new Error("This model access choice is no longer available.");
     }
@@ -280,7 +280,7 @@ export async function answerProviderLoginModelAccess(params: {
   try {
     const { completeProviderModelAccess } = await import("../commands/models/auth-model-policy.js");
     assertCurrent();
-    await completeProviderModelAccess({
+    const message = await completeProviderModelAccess({
       prepared: pending.prepared,
       prompter: {
         select: async ({ options }) => {
@@ -295,11 +295,7 @@ export async function answerProviderLoginModelAccess(params: {
       assertCurrent,
     });
     return {
-      text: `${pending.terminalMessage}\n\n${
-        answer.value === "all"
-          ? `All ${pending.prepared.providerLabel} models are now visible.`
-          : "Current model restrictions kept."
-      }`,
+      text: `${pending.terminalMessage}\n\n${message}`,
     };
   } catch (error) {
     return {

@@ -22,7 +22,7 @@ import {
   type ProviderChannelLoginChoice,
 } from "../../plugin-sdk/provider-auth-login-flow-runtime.js";
 import { defaultRuntime, type RuntimeEnv } from "../../runtime.js";
-import { isConfiguredCommandOwner } from "../command-auth.js";
+import { resolveCommandAuthorization } from "../command-auth.js";
 import type { ReplyPayload } from "../types.js";
 import { markCommandSessionMetadataChanged } from "./command-session-metadata.js";
 import type { CommandHandler, HandleCommandsParams } from "./commands-types.js";
@@ -114,7 +114,12 @@ function assertProviderLoginAuthority(
     params.opts.assertProviderLoginAuthority();
     return;
   }
-  if (!isConfiguredCommandOwner(config, params.command)) {
+  const authorization = resolveCommandAuthorization({
+    cfg: config,
+    ctx: { ...params.ctx, SenderId: params.command.senderId, AccountId: params.command.accountId },
+    commandAuthorized: params.command.isAuthorizedSender,
+  });
+  if (!authorization.senderIsOwner || !authorization.isAuthorizedSender) {
     throw new Error("Provider login authority is no longer active.");
   }
 }
@@ -342,10 +347,13 @@ export const handleLoginCommand: CommandHandler = async (params, allowTextComman
         command,
         runtime: defaultRuntime,
         signal: params.opts?.abortSignal,
-        assertCurrent: () =>
+        assertCurrent: (config) =>
           assertProviderLoginAuthority(
             params,
-            params.opts?.getProviderLoginConfig?.() ?? getRuntimeConfigSnapshot() ?? params.cfg,
+            config ??
+              params.opts?.getProviderLoginConfig?.() ??
+              getRuntimeConfigSnapshot() ??
+              params.cfg,
           ),
       }),
   });

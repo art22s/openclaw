@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Locator } from "playwright";
@@ -102,7 +103,9 @@ suite.define(() => {
         await picker.selectOption("example-device");
         await page.locator("[data-models-login-start]").click();
         const login = await gateway.waitForRequest("models.authLogin");
-        expect(login.params).toEqual({
+        const loginParams = login.params;
+        assert(loginParams && typeof loginParams === "object" && "sessionId" in loginParams);
+        expect(loginParams).toEqual({
           sessionId: expect.any(String),
           authChoice: "example-device",
           agentId: "main",
@@ -164,7 +167,7 @@ suite.define(() => {
             return requests.at(-1)?.params;
           })
           .toEqual({
-            sessionId: login.params.sessionId,
+            sessionId: loginParams.sessionId,
             answer: { stepId: "model-access", value: modelAccess.value },
           });
         const saved = page.getByRole("status").filter({ hasText: "Provider credentials saved." });

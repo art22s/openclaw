@@ -39,6 +39,7 @@ import { normalizeAgentModelRefForConfig } from "../../config/model-input.js";
 import type { ConfigFileSnapshot, OpenClawConfig } from "../../config/types.openclaw.js";
 import { isRemoteEnvironment } from "../../infra/remote-env.js";
 import {
+  applyDefaultModel,
   applyProviderAuthConfigPatch,
   pickAuthMethod,
   restorePriorAgentsDefaultsModelUnlessOptIn,
@@ -423,7 +424,9 @@ async function persistProviderAuthResult(params: {
         restorePriorAgentsDefaultsModelUnlessOptIn({
           cfg: applyProviderAuthConfigPatch(
             loginConfig,
-            withoutProviderModelPolicy(params.result.configPatch, loginConfig),
+            profiles.length > 0
+              ? withoutProviderModelPolicy(params.result.configPatch, loginConfig)
+              : params.result.configPatch,
             {
               replaceDefaultModels: params.result.replaceDefaultModels,
             },
@@ -488,7 +491,10 @@ async function persistProviderAuthResult(params: {
             setDefault: params.setDefault,
           });
           if (params.setDefault && defaultModel) {
-            next = applyProviderLoginDefaultModel(next, defaultModel);
+            next =
+              profiles.length > 0
+                ? applyProviderLoginDefaultModel(next, defaultModel)
+                : applyDefaultModel(next, defaultModel);
           }
           return next;
         },

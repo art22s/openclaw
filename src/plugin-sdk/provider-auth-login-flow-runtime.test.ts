@@ -49,7 +49,11 @@ describe("provider channel login runtime", () => {
   });
 
   it.each([
-    ["Show all Acme models", ["other/current", "acme-cloud/*"], "All Acme models are now visible."],
+    [
+      "Show all Acme models",
+      ["other/current", "acme-cloud/*"],
+      "Application by the running Gateway is not confirmed.",
+    ],
     ["Keep current restrictions", ["other/current"], "Current model restrictions kept."],
   ])("applies an authorized %s answer through the policy owner", async (label, allow, outcome) => {
     await withOpenClawTestState({ label: "channel-model-consent" }, async (state) => {

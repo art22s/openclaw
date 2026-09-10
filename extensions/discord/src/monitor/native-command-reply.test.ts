@@ -88,7 +88,7 @@ describe("deliverDiscordInteractionReply", () => {
       });
       const outcome = delivery.then(
         (value) => ({ value }),
-        (error) => ({ error }),
+        (error: unknown) => ({ error }),
       );
       await started.promise;
       const message = sender.mock.calls[0]?.[0];

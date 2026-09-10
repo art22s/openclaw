@@ -61,7 +61,10 @@ describe("provider model access consent", () => {
       config.agents!.defaults!.models = { "other/current": {} };
     }
     await state.writeConfig(config);
-    await completeProviderModelAccess({ prepared: prepare(), prompter, runtime });
+    const outcome = await completeProviderModelAccess({ prepared: prepare(), prompter, runtime });
+    expect(outcome).toContain("Application by the running Gateway is not confirmed");
+    expect(outcome).toContain("openclaw gateway restart");
+    expect(runtime.log).not.toHaveBeenCalledWith(expect.stringContaining("models are now visible"));
     const saved = await readSaved();
     expect(saved.agents?.defaults?.model).toBe("other/current");
     expect(saved.agents?.defaults?.modelPolicy?.allow).toEqual(
@@ -198,7 +201,7 @@ describe("provider model access consent", () => {
         expect(complete).toBe(false);
         claim.settle(status);
         if (status === "applied") {
-          await expect(result).resolves.toBeUndefined();
+          await expect(result).resolves.toBe("All Sample models are now visible.");
         } else {
           await expect(result).rejects.toThrow("did not apply");
         }
