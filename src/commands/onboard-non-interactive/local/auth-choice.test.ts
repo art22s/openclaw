@@ -608,6 +608,30 @@ describe("applyNonInteractiveAuthChoice", () => {
     ]);
   });
 
+  it("configures non-interactive custom provider thinking levels", async () => {
+    const runtime = createRuntime();
+    const nextConfig = { agents: { defaults: {} } } as OpenClawConfig;
+    resolveNonInteractiveApiKey.mockResolvedValueOnce(undefined);
+
+    const result = await applyNonInteractiveAuthChoice({
+      nextConfig,
+      authChoice: "custom-api-key",
+      opts: {
+        customBaseUrl: "https://models.custom.local/v1",
+        customModelId: "reasoning-model",
+        customThinkingLevels: "off=none,low,medium,high",
+      } as never,
+      runtime: runtime as never,
+      baseConfig: nextConfig,
+      target,
+    });
+
+    expect(result?.models?.providers?.["custom-models-custom-local"]?.models?.[0]).toMatchObject({
+      reasoning: true,
+      thinkingLevelMap: { off: "none", low: "low", medium: "medium", high: "high" },
+    });
+  });
+
   it("infers image-capable non-interactive custom provider models by known model id", async () => {
     const runtime = createRuntime();
     const nextConfig = { agents: { defaults: {} } } as OpenClawConfig;

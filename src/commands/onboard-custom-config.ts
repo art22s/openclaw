@@ -9,6 +9,7 @@ import {
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
+import type { ModelDataThinkingLevelMap } from "../../packages/llm-core/src/model-data.js";
 import { CONTEXT_WINDOW_HARD_MIN_TOKENS } from "../agents/context-window-guard.js";
 import { DEFAULT_PROVIDER } from "../agents/defaults.js";
 import { normalizeConfiguredProviderCatalogModelId } from "../agents/model-ref-shared.js";
@@ -21,6 +22,10 @@ import { applyPrimaryModel } from "../plugins/provider-model-primary.js";
 import { normalizeOptionalSecretInput } from "../utils/normalize-secret-input.js";
 import { normalizeAlias } from "./models/alias-name.js";
 import { applyAgentModelDefaults, type OnboardingAgentTarget } from "./onboard-agent-target.js";
+import {
+  assertCustomThinkingLevelsSupported,
+  parseCustomThinkingLevels,
+} from "./onboard-custom-thinking.js";
 
 /**
  * Wizard default for non-Azure custom APIs when context length is unknown.
@@ -197,6 +202,7 @@ type ApplyCustomApiConfigParams = {
   providerId?: string;
   alias?: string;
   supportsImageInput?: boolean;
+  thinkingLevelMap?: ModelDataThinkingLevelMap;
   target?: OnboardingAgentTarget;
   setAsPrimary?: boolean;
   manifestPlugins?: readonly CustomAliasManifestPlugin[];
@@ -210,6 +216,7 @@ type ParseNonInteractiveCustomApiFlagsParams = {
   apiKey?: string;
   providerId?: string;
   supportsImageInput?: boolean;
+  thinkingLevels?: string;
 };
 
 /** Validated non-interactive custom API setup flags. */
@@ -220,6 +227,7 @@ type ParsedNonInteractiveCustomApiFlags = {
   apiKey?: string;
   providerId?: string;
   supportsImageInput?: boolean;
+  thinkingLevelMap?: ModelDataThinkingLevelMap;
 };
 
 type CustomApiErrorCode =
@@ -568,15 +576,19 @@ export function parseNonInteractiveCustomApiFlags(
       "Custom provider ID must include letters, numbers, or hyphens.",
     );
   }
+  const compatibility = parseCustomApiCompatibility(params.compatibility);
+  const thinkingLevelMap = parseCustomThinkingLevels(params.thinkingLevels);
+  assertCustomThinkingLevelsSupported({ compatibility, thinkingLevelMap });
   return {
     baseUrl,
     modelId,
-    compatibility: parseCustomApiCompatibility(params.compatibility),
+    compatibility,
     ...(apiKey ? { apiKey } : {}),
     ...(providerId ? { providerId } : {}),
     ...(params.supportsImageInput === undefined
       ? {}
       : { supportsImageInput: params.supportsImageInput }),
+    ...(thinkingLevelMap ? { thinkingLevelMap } : {}),
   };
 }
 
@@ -597,6 +609,7 @@ export function applyCustomApiConfig(params: ApplyCustomApiConfigParams): Custom
       'Custom provider compatibility must be "openai", "openai-responses", or "anthropic".',
     );
   }
+  assertCustomThinkingLevelsSupported(params);
 
   const modelId = normalizeOptionalString(params.modelId) ?? "";
   if (!modelId) {
@@ -646,6 +659,16 @@ export function applyCustomApiConfig(params: ApplyCustomApiConfigParams): Custom
       inferKnownModels: !isAzure,
     }),
   );
+  const explicitThinking = params.thinkingLevelMap
+    ? {
+        reasoning: true,
+        thinkingLevelMap: params.thinkingLevelMap,
+      }
+    : undefined;
+  const explicitThinkingCompat =
+    params.thinkingLevelMap && params.compatibility === "openai" && !isAzureOpenAi
+      ? { supportsReasoningEffort: true }
+      : undefined;
   const nextModel = isAzure
     ? {
         id: modelId,
@@ -654,8 +677,9 @@ export function applyCustomApiConfig(params: ApplyCustomApiConfigParams): Custom
         maxTokens: AZURE_DEFAULT_MAX_TOKENS,
         input: generatedInput,
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        reasoning: isLikelyReasoningModel,
-        compat: { supportsStore: false },
+        reasoning: explicitThinking?.reasoning ?? isLikelyReasoningModel,
+        ...(explicitThinking ? { thinkingLevelMap: explicitThinking.thinkingLevelMap } : {}),
+        compat: { supportsStore: false, ...explicitThinkingCompat },
       }
     : {
         id: modelId,
@@ -664,7 +688,9 @@ export function applyCustomApiConfig(params: ApplyCustomApiConfigParams): Custom
         maxTokens: DEFAULT_MAX_TOKENS,
         input: generatedInput,
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        reasoning: false,
+        reasoning: explicitThinking?.reasoning ?? false,
+        ...(explicitThinking ? { thinkingLevelMap: explicitThinking.thinkingLevelMap } : {}),
+        ...(explicitThinkingCompat ? { compat: explicitThinkingCompat } : {}),
       };
   const mergedModels = hasModel
     ? existingModels.map((model) =>
@@ -675,6 +701,19 @@ export function applyCustomApiConfig(params: ApplyCustomApiConfigParams): Custom
               // Preserve caller-authored catalog fields unless setup explicitly
               // received a new input-mode choice for this existing model.
               ...(explicitInput ? { input: explicitInput } : {}),
+              ...(explicitThinking
+                ? {
+                    ...explicitThinking,
+                    ...(explicitThinkingCompat
+                      ? {
+                          compat: {
+                            ...(isAzure ? nextModel.compat : model.compat),
+                            ...explicitThinkingCompat,
+                          },
+                        }
+                      : {}),
+                  }
+                : {}),
               name: model.name ?? nextModel.name,
               cost: model.cost ?? nextModel.cost,
               contextWindow: normalizeContextWindowForCustomModel(model.contextWindow),

@@ -27,6 +27,7 @@ import {
   type CustomApiCompatibility,
   type CustomApiResult,
 } from "./onboard-custom-config.js";
+import { parseCustomThinkingLevels } from "./onboard-custom-thinking.js";
 import type { SecretInputMode } from "./onboard-types.js";
 
 const VERIFY_TIMEOUT_MS = 30_000;
@@ -207,6 +208,25 @@ async function promptCustomApiModelId(prompter: WizardPrompter): Promise<string>
       validate: (val) => (val.trim() ? undefined : t("wizard.customProvider.modelIdRequired")),
     })
   ).trim();
+}
+
+async function promptCustomThinkingLevels(prompter: WizardPrompter) {
+  const input = await prompter.text({
+    message: t("wizard.customProvider.thinkingLevels"),
+    placeholder: t("wizard.customProvider.thinkingLevelsPlaceholder"),
+    initialValue: "",
+    validate: (value) => {
+      try {
+        parseCustomThinkingLevels(value);
+        return undefined;
+      } catch (error) {
+        return error instanceof Error
+          ? error.message
+          : t("wizard.customProvider.thinkingLevelsInvalid");
+      }
+    },
+  });
+  return parseCustomThinkingLevels(input);
 }
 
 async function applyCustomApiRetryChoice(params: {
@@ -420,6 +440,8 @@ export async function promptCustomApiConfig(params: {
           initialValue: imageInputInference.supportsImageInput,
         });
   const resolvedCompatibility = compatibility ?? "openai";
+  const thinkingLevelMap =
+    resolvedCompatibility === "anthropic" ? undefined : await promptCustomThinkingLevels(prompter);
   const result = applyCustomApiConfig({
     config,
     baseUrl,
@@ -430,6 +452,7 @@ export async function promptCustomApiConfig(params: {
     alias: aliasInput,
     manifestPlugins,
     supportsImageInput,
+    thinkingLevelMap,
     ...(params.target ? { target: params.target } : {}),
     ...(params.setAsPrimary === false ? { setAsPrimary: false } : {}),
   });

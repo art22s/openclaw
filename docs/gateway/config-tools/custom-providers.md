@@ -13,6 +13,8 @@ Registering custom providers under `models.providers`, what a custom `baseUrl` i
 
 Provider plugins publish their own model catalog rows. Add custom providers via `models.providers` in config or `~/.openclaw/agents/<agentId>/agent/models.json`.
 
+For OpenAI-compatible and OpenAI Responses-compatible endpoints, the setup wizard can also declare supported thinking levels for a custom model. Enter canonical OpenClaw levels separated by commas and use `=` when the provider expects a different value, for example `off=none,low,medium,high,xhigh=extra_high`. In non-interactive onboarding, pass the same value to `--custom-thinking-levels`.
+
 Configuring a custom/local provider `baseUrl` is also the narrow network trust decision for model HTTP requests: OpenClaw allows that exact `scheme://host:port` origin through the guarded fetch path, without adding a separate config option or trusting other private origins.
 
 ```json5

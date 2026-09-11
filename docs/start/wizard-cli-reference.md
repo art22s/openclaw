@@ -344,6 +344,8 @@ on a different release.
 
     Onboarding infers image support for common vision model IDs (GPT-4o/4.1/5.x, Claude 3/4, Gemini, Qwen-VL, LLaVA, Pixtral, and similar) and only asks when the model name is unknown.
 
+    For OpenAI-compatible and OpenAI Responses-compatible endpoints, the optional thinking-level prompt accepts comma-separated OpenClaw levels. Map a level to a provider-specific value with `=`, for example `off=none,low,medium,high,xhigh=extra_high`. Omitted levels are treated as unsupported.
+
     Non-interactive flags:
     - `--auth-choice custom-api-key`
     - `--custom-base-url`
@@ -352,6 +354,7 @@ on a different release.
     - `--custom-provider-id` (optional)
     - `--custom-compatibility <openai|openai-responses|anthropic>` (optional; default `openai`)
     - `--custom-image-input` / `--custom-text-input` (optional; override inferred model input capability)
+    - `--custom-thinking-levels <levels>` (optional for OpenAI-compatible endpoints; comma-separated levels with optional `level=provider-value` mappings)
 
   </Accordion>
   <Accordion title="Skip">

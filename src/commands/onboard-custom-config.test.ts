@@ -15,6 +15,7 @@ import {
   resolveCustomModelAliasError,
   resolveCustomModelImageInputInference,
 } from "./onboard-custom-config.js";
+import { parseCustomThinkingLevels } from "./onboard-custom-thinking.js";
 
 const EXPECTED_CUSTOM_PROVIDER_DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000;
 const manifestPlugins = [
@@ -416,6 +417,18 @@ describe("applyCustomApiConfig", () => {
       },
       expectedMessage: "Custom provider ID must include letters, numbers, or hyphens.",
     },
+    {
+      name: "custom thinking levels for Anthropic-compatible endpoints",
+      params: {
+        config: {},
+        baseUrl: "https://llm.example.com/v1",
+        modelId: "foo-large",
+        compatibility: "anthropic" as const,
+        thinkingLevelMap: parseCustomThinkingLevels("low,high"),
+      },
+      expectedMessage:
+        "Custom thinking levels are currently supported only for OpenAI-compatible endpoints.",
+    },
   ])("rejects $name", ({ params, expectedMessage }) => {
     expect(() => applyCustomApiConfig(params)).toThrow(expectedMessage);
   });
@@ -598,6 +611,67 @@ describe("applyCustomApiConfig", () => {
     ).toBeUndefined();
   });
 
+  it("persists explicitly configured thinking levels for custom providers", () => {
+    const result = applyCustomApiConfig({
+      config: {},
+      baseUrl: "https://llm.example.com/v1",
+      modelId: "reasoning-model",
+      compatibility: "openai",
+      providerId: "custom",
+      thinkingLevelMap: parseCustomThinkingLevels("off=none,low,high,xhigh=extra_high"),
+    });
+
+    expect(result.config.models?.providers?.custom?.models?.[0]).toMatchObject({
+      reasoning: true,
+      thinkingLevelMap: {
+        off: "none",
+        minimal: null,
+        low: "low",
+        medium: null,
+        high: "high",
+        xhigh: "extra_high",
+        max: null,
+      },
+      compat: { supportsReasoningEffort: true },
+    });
+  });
+
+  it("keeps Azure compatibility fields when adding explicit thinking levels", () => {
+    const result = applyCustomApiConfig({
+      config: {
+        models: {
+          providers: {
+            custom: {
+              baseUrl: "https://my-resource.services.ai.azure.com/openai/v1",
+              api: "openai-completions",
+              models: [
+                {
+                  id: "reasoning-model",
+                  name: "reasoning-model",
+                  reasoning: false,
+                  input: ["text"],
+                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                  contextWindow: 128_000,
+                  maxTokens: 4096,
+                },
+              ],
+            },
+          },
+        },
+      } as OpenClawConfig,
+      baseUrl: "https://my-resource.services.ai.azure.com",
+      modelId: "reasoning-model",
+      compatibility: "openai",
+      providerId: "custom",
+      thinkingLevelMap: parseCustomThinkingLevels("off=none,low,high"),
+    });
+
+    expect(result.config.models?.providers?.custom?.models?.[0]?.compat).toEqual({
+      supportsStore: false,
+      supportsReasoningEffort: true,
+    });
+  });
+
   it("adds image input for new non-azure custom models when requested", () => {
     const result = applyCustomApiConfig({
       config: {},
@@ -742,6 +816,24 @@ describe("parseNonInteractiveCustomApiFlags", () => {
     expect(result.supportsImageInput).toBe(true);
   });
 
+  it("parses custom thinking levels and provider-native mappings", () => {
+    const result = parseNonInteractiveCustomApiFlags({
+      baseUrl: "https://llm.example.com/v1",
+      modelId: "foo-large",
+      thinkingLevels: " off=none, low, high=reasoning_high ",
+    });
+
+    expect(result.thinkingLevelMap).toEqual({
+      off: "none",
+      minimal: null,
+      low: "low",
+      medium: null,
+      high: "reasoning_high",
+      xhigh: null,
+      max: null,
+    });
+  });
+
   it("parses OpenAI Responses compatibility", () => {
     const result = parseNonInteractiveCustomApiFlags({
       baseUrl: "https://llm.example.com/v1",
@@ -776,6 +868,26 @@ describe("parseNonInteractiveCustomApiFlags", () => {
         providerId: "!!!",
       },
       expectedMessage: "Custom provider ID must include letters, numbers, or hyphens.",
+    },
+    {
+      name: "invalid thinking levels",
+      flags: {
+        baseUrl: "https://llm.example.com/v1",
+        modelId: "foo-large",
+        thinkingLevels: "low,super-high",
+      },
+      expectedMessage: "Invalid custom thinking levels.",
+    },
+    {
+      name: "thinking levels for Anthropic compatibility",
+      flags: {
+        baseUrl: "https://llm.example.com/v1",
+        modelId: "foo-large",
+        compatibility: "anthropic",
+        thinkingLevels: "low,high",
+      },
+      expectedMessage:
+        "Custom thinking levels are currently supported only for OpenAI-compatible endpoints.",
     },
   ])("rejects $name", ({ flags, expectedMessage }) => {
     expect(() => parseNonInteractiveCustomApiFlags(flags)).toThrow(expectedMessage);

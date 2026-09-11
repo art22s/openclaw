@@ -217,6 +217,7 @@ export async function applyNonInteractiveAuthChoice(params: {
         apiKey: opts.customApiKey,
         providerId: opts.customProviderId,
         supportsImageInput: opts.customImageInput,
+        thinkingLevels: opts.customThinkingLevels,
       });
       const resolvedProviderId = resolveCustomProviderId({
         config: nextConfig,
@@ -258,6 +259,7 @@ export async function applyNonInteractiveAuthChoice(params: {
         apiKey: customApiKeyInput,
         providerId: customAuth.providerId,
         supportsImageInput: customAuth.supportsImageInput,
+        thinkingLevelMap: customAuth.thinkingLevelMap,
         target: params.target,
       });
       if (result.providerIdRenamedFrom && result.providerId) {

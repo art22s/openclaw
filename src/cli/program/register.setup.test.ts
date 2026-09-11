@@ -583,6 +583,8 @@ describe("registerSetupCommand", () => {
       "--custom-compatibility",
       "anthropic",
       "--custom-text-input",
+      "--custom-thinking-levels",
+      "off=none,low,medium,high",
     ]);
 
     expect(setupWizardCommandMock).toHaveBeenCalledWith(lastWizardOptions(), runtime);
@@ -604,6 +606,7 @@ describe("registerSetupCommand", () => {
       customProviderId: "custom-provider",
       customCompatibility: "anthropic",
       customImageInput: false,
+      customThinkingLevels: "off=none,low,medium,high",
     });
     expect(setupCommandMock).not.toHaveBeenCalled();
   });

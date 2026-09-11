@@ -54,6 +54,10 @@ export const en = {
       modelIdPlaceholder: "e.g. llama3, claude-3-7-sonnet",
       modelIdRequired: "Model ID is required",
       retryChoice: "What would you like to change?",
+      thinkingLevels:
+        "Thinking levels (optional; comma-separated, with optional provider mappings)",
+      thinkingLevelsInvalid: "Invalid custom thinking levels.",
+      thinkingLevelsPlaceholder: "e.g. off=none,low,medium,high,xhigh",
       verifying: "Verifying...",
       verificationFailedError: "Verification failed: {error}",
       verificationFailedStatus: "Verification failed: status {status}",

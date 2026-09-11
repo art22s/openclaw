@@ -122,7 +122,7 @@ describe("promptCustomApiConfig", () => {
     stubFetchSequence([{ ok: true }]);
     const result = await runPromptCustomApi(prompter);
 
-    expectOpenAiCompatResult({ prompter, textCalls: 5, selectCalls: 2, result });
+    expectOpenAiCompatResult({ prompter, textCalls: 6, selectCalls: 2, result });
     expect(result.config.agents?.defaults?.models?.["custom/llama3"]?.alias).toBe("local");
     expect(result.config.models?.providers?.custom?.models?.[0]?.input).toEqual(["text"]);
     expect(prompter.confirm).not.toHaveBeenCalled();
@@ -149,6 +149,57 @@ describe("promptCustomApiConfig", () => {
     });
     expect(result.config.agents?.defaults?.model).toBeUndefined();
     expect(config).toEqual({});
+  });
+
+  it("saves custom thinking levels and provider-native mappings", async () => {
+    const prompter = createTestPrompter({
+      text: [
+        "https://proxy.example.com/v1",
+        "test-key",
+        "reasoning-model",
+        "custom",
+        "",
+        "off=none,low,medium,high,xhigh=extra_high",
+      ],
+      select: ["plaintext", "openai"],
+    });
+    stubFetchSequence([{ ok: true }]);
+
+    const result = await runPromptCustomApi(prompter);
+    const model = result.config.models?.providers?.custom?.models?.[0];
+
+    expect(model).toMatchObject({
+      reasoning: true,
+      thinkingLevelMap: {
+        off: "none",
+        minimal: null,
+        low: "low",
+        medium: "medium",
+        high: "high",
+        xhigh: "extra_high",
+        max: null,
+      },
+      compat: { supportsReasoningEffort: true },
+    });
+  });
+
+  it("does not offer generic thinking mappings for Anthropic-compatible endpoints", async () => {
+    const prompter = createTestPrompter({
+      text: ["https://proxy.example.com", "test-key", "claude-custom", "custom", ""],
+      select: ["plaintext", "anthropic"],
+    });
+    stubFetchSequence([{ ok: true }]);
+
+    const result = await runPromptCustomApi(prompter);
+
+    expect(
+      prompter.text.mock.calls.some(
+        ([options]) =>
+          options.message ===
+          "Thinking levels (optional; comma-separated, with optional provider mappings)",
+      ),
+    ).toBe(false);
+    expect(result.config.models?.providers?.custom?.models?.[0]?.reasoning).toBe(false);
   });
 
   it("rejects aliases already used only by the selected agent", async () => {
@@ -318,7 +369,7 @@ describe("promptCustomApiConfig", () => {
     stubFetchSequence([{ ok: false, status: 400 }, { ok: true }]);
     await runPromptCustomApi(prompter);
 
-    expect(prompter.text).toHaveBeenCalledTimes(6);
+    expect(prompter.text).toHaveBeenCalledTimes(7);
     expect(prompter.select).toHaveBeenCalledTimes(3);
   });
 
@@ -368,7 +419,7 @@ describe("promptCustomApiConfig", () => {
     stubFetchSequence([{ ok: true }]);
     const result = await runPromptCustomApi(prompter);
 
-    expectOpenAiCompatResult({ prompter, textCalls: 5, selectCalls: 2, result });
+    expectOpenAiCompatResult({ prompter, textCalls: 6, selectCalls: 2, result });
   });
 
   it("detects OpenAI Responses compatibility when chat completions fail", async () => {
@@ -383,7 +434,7 @@ describe("promptCustomApiConfig", () => {
     expect(result.config.models?.providers?.custom?.api).toBe("openai-responses");
     expect(fetchMock.mock.calls[0]?.[0]).toBe("https://example.com/v1/chat/completions");
     expect(fetchMock.mock.calls[1]?.[0]).toBe("https://example.com/v1/responses");
-    expect(prompter.text).toHaveBeenCalledTimes(5);
+    expect(prompter.text).toHaveBeenCalledTimes(6);
     expect(prompter.select).toHaveBeenCalledTimes(2);
   });
 
@@ -436,6 +487,6 @@ describe("promptCustomApiConfig", () => {
     await vi.advanceTimersByTimeAsync(30_000);
     await promise;
 
-    expect(prompter.text).toHaveBeenCalledTimes(6);
+    expect(prompter.text).toHaveBeenCalledTimes(7);
   });
 });

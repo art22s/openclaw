@@ -86,6 +86,7 @@ export type OnboardOptions = OnboardDynamicProviderOptions & {
   customProviderId?: string;
   customCompatibility?: "openai" | "openai-responses" | "anthropic";
   customImageInput?: boolean;
+  customThinkingLevels?: string;
   gatewayPort?: number;
   gatewayBind?: GatewayBind;
   gatewayAuth?: GatewayAuthChoice;

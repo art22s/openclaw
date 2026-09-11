@@ -355,6 +355,7 @@ async function validateResetAuthChoice(params: {
         apiKey: undefined,
         providerId: params.opts.customProviderId,
         supportsImageInput: params.opts.customImageInput,
+        thinkingLevels: params.opts.customThinkingLevels,
       });
       const customProviderId = resolveCustomProviderId({
         config: params.baseConfig,
@@ -386,6 +387,7 @@ async function validateResetAuthChoice(params: {
         apiKey: undefined,
         providerId: custom.providerId,
         supportsImageInput: custom.supportsImageInput,
+        thinkingLevelMap: custom.thinkingLevelMap,
       });
     } catch (error) {
       const message =
