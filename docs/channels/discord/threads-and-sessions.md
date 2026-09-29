@@ -33,6 +33,25 @@ openclaw message thread create --channel discord --target channel:<forumId> \
 
 Forum parents do not accept Discord components. If you need components, send to the thread itself (`channel:<threadId>`).
 
+## AI auto-naming
+
+Set `channels.discord.thread.autoName` to rename newly created threads after a set number of user and agent messages. The default is `false`. `true` uses five messages; a positive integer sets the threshold, and `0` or `false` disables it. An account setting overrides the channel-wide value.
+
+```json5
+{
+  channels: {
+    discord: {
+      thread: { autoName: 5 },
+      accounts: {
+        work: { thread: { autoName: 8 } },
+      },
+    },
+  },
+}
+```
+
+At the threshold, OpenClaw sends a bounded recent thread transcript to an isolated title-generation run. It uses the configured utility model when available, then falls back to the agent's primary model. This run does not inherit the thread session. Each thread gets one naming attempt, persisted across Gateway restarts. OpenClaw allows two renames per parent channel in ten minutes and skips further attempts during that window, when the bot lacks **Manage Threads**, or when Discord rejects the request. Threads created before the bot sees their creation event are not auto-named.
+
 ## Session and thread behavior
 
 <AccordionGroup>

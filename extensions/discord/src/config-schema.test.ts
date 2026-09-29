@@ -677,6 +677,19 @@ describe("discord config schema", () => {
     }
   });
 
+  it("accepts thread.autoName thresholds and account overrides", () => {
+    for (const value of [false, true, 0, 5, 12]) {
+      expect(DiscordConfigSchema.safeParse({ thread: { autoName: value } }).success).toBe(true);
+      expect(
+        DiscordConfigSchema.safeParse({ accounts: { work: { thread: { autoName: value } } } })
+          .success,
+      ).toBe(true);
+    }
+    for (const value of [-1, 1.5, "5"]) {
+      expect(DiscordConfigSchema.safeParse({ thread: { autoName: value } }).success).toBe(false);
+    }
+  });
+
   it("rejects unknown fields under agentComponents", () => {
     const res = DiscordConfigSchema.safeParse({
       agentComponents: {

@@ -9,6 +9,7 @@ import {
   type GatewayGuildDeleteDispatchData,
   type GatewayPresenceUpdateDispatchData,
   type GatewayThreadDeleteDispatchData,
+  type GatewayThreadCreateDispatchData,
   type GatewayThreadUpdateDispatchData,
 } from "discord-api-types/v10";
 import type { Client } from "./client.js";
@@ -107,6 +108,14 @@ export abstract class ThreadUpdateListener extends BaseListener {
   readonly type = GatewayDispatchEvents.ThreadUpdate;
   abstract override handle(
     data: GatewayThreadUpdateDispatchData,
+    client: Client,
+  ): Promise<void> | void;
+}
+
+export abstract class ThreadCreateListener extends BaseListener {
+  readonly type = GatewayDispatchEvents.ThreadCreate;
+  abstract override handle(
+    data: GatewayThreadCreateDispatchData,
     client: Client,
   ): Promise<void> | void;
 }

@@ -113,6 +113,7 @@ const DiscordPresenceEventsSchema = z
 const DiscordThreadSchema = z
   .object({
     inheritParent: z.boolean().optional(),
+    autoName: z.union([z.number().int().nonnegative(), z.boolean()]).optional(),
   })
   .strict();
 

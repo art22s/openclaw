@@ -42,6 +42,16 @@ import {
 } from "./listeners.js";
 import type { DiscordLivePolicyReader } from "./live-policy.js";
 import { resolveDiscordPresenceUpdate } from "./presence.js";
+import {
+  DiscordThreadAutoNamer,
+  resolveDiscordThreadAutoNameThreshold,
+} from "./thread-auto-name.js";
+import {
+  DiscordAutoNameMessageCreateListener,
+  DiscordAutoNameThreadCreateListener,
+  DiscordAutoNameThreadDeleteListener,
+  DiscordAutoNameThreadUpdateListener,
+} from "./thread-auto-name.listeners.js";
 
 type DiscordAutoPresenceController = ReturnType<typeof createDiscordAutoPresenceController>;
 type DiscordListenerConfig = {
@@ -306,6 +316,34 @@ export function registerDiscordMonitorListeners(params: {
     params.client.listeners,
     new DiscordThreadDeleteListener(params.cfg, params.accountId, params.logger),
   );
+
+  if (params.botUserId && resolveDiscordThreadAutoNameThreshold(params.cfg, params.accountId) > 0) {
+    try {
+      const namer = new DiscordThreadAutoNamer({
+        cfg: params.cfg,
+        accountId: params.accountId,
+        botUserId: params.botUserId,
+      });
+      registerDiscordListener(
+        params.client.listeners,
+        new DiscordAutoNameThreadCreateListener(namer),
+      );
+      registerDiscordListener(
+        params.client.listeners,
+        new DiscordAutoNameMessageCreateListener(namer),
+      );
+      registerDiscordListener(
+        params.client.listeners,
+        new DiscordAutoNameThreadUpdateListener(namer),
+      );
+      registerDiscordListener(
+        params.client.listeners,
+        new DiscordAutoNameThreadDeleteListener(namer),
+      );
+    } catch {
+      // A missing optional state store must not prevent Discord startup.
+    }
+  }
 
   if (params.discordConfig.intents?.presence) {
     const presenceListener = new DiscordPresenceListener({

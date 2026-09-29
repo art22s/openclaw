@@ -19,6 +19,7 @@ export async function generateThreadTitle(params: {
   channelName?: string;
   channelDescription?: string;
   timeoutMs?: number;
+  maxSourceChars?: number;
 }): Promise<string | null> {
   const sourceText = params.messageText.trim();
   if (!sourceText) {
@@ -28,6 +29,7 @@ export async function generateThreadTitle(params: {
   try {
     const userMessage = buildThreadTitleCompletionUserMessage({
       sourceText,
+      maxSourceChars: params.maxSourceChars ?? MAX_THREAD_TITLE_SOURCE_CHARS,
       channelName: params.channelName,
       channelDescription: params.channelDescription,
     });
@@ -42,18 +44,19 @@ export async function generateThreadTitle(params: {
       maxLength: MAX_THREAD_TITLE_SOURCE_CHARS,
     });
     return generated ? normalizeGeneratedThreadTitle(generated) : null;
-  } catch (err) {
-    logVerbose(`thread-title: title generation failed for agent ${params.agentId}: ${String(err)}`);
+  } catch {
+    logVerbose(`thread-title: title generation failed for agent ${params.agentId}`);
     return null;
   }
 }
 
 function buildThreadTitleCompletionUserMessage(params: {
   sourceText: string;
+  maxSourceChars: number;
   channelName?: string;
   channelDescription?: string;
 }): string {
-  const sourceText = truncateThreadTitleSourceText(params.sourceText);
+  const sourceText = truncateThreadTitleSourceText(params.sourceText, params.maxSourceChars);
   const channelName = normalizeTitleContextField(
     params.channelName,
     MAX_THREAD_TITLE_CHANNEL_NAME_CHARS,
@@ -73,11 +76,11 @@ function buildThreadTitleCompletionUserMessage(params: {
   return messageLines.join("\n\n");
 }
 
-function truncateThreadTitleSourceText(sourceText: string): string {
-  if (sourceText.length <= MAX_THREAD_TITLE_SOURCE_CHARS) {
+function truncateThreadTitleSourceText(sourceText: string, maxChars: number): string {
+  if (sourceText.length <= maxChars) {
     return sourceText;
   }
-  return `${truncateUtf16Safe(sourceText, MAX_THREAD_TITLE_SOURCE_CHARS)}...`;
+  return `${truncateUtf16Safe(sourceText, maxChars)}...`;
 }
 
 function resolveThreadTitleTimeoutMs(timeoutMs: number | undefined): number {
