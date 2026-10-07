@@ -695,4 +695,3 @@ export const FIELD_LABELS: Record<string, string> = {
   "plugins.entries.*.env": "Plugin Environment Variables",
   "plugins.entries.*.config": "Plugin Config",
 };
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

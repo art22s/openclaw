@@ -124,7 +124,11 @@ it("routes configured aliases through native TypeSafe wire with their own endpoi
     "Bearer synthetic-custom-key",
   );
   expect(new Headers(fetch.mock.lastCall?.[1]?.headers).get("x-tenant")).toBe("synthetic-tenant");
-  expect(JSON.parse(String(fetch.mock.lastCall?.[1]?.body))).toEqual({
+  const requestBody = fetch.mock.lastCall?.[1]?.body;
+  if (typeof requestBody !== "string") {
+    throw new Error("Expected a JSON string request body");
+  }
+  expect(JSON.parse(requestBody)).toEqual({
     ...batch,
     questions: { ...batch.questions, q: { ...batch.questions.q, type: "noul" } },
     model: "jev-agent-selected",

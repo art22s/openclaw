@@ -1,7 +1,7 @@
 import type { ModelProviderConfig } from "../config/types.models.js";
 
 /** Prepared transport settings for an explicitly configured decision endpoint. */
-export type DecisionProviderConfig = Pick<
+type DecisionProviderConfig = Pick<
   ModelProviderConfig,
   "baseUrl" | "apiKey" | "headers" | "authHeader" | "timeoutSeconds"
 >;

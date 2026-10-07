@@ -17,11 +17,7 @@ import {
   inspectDecisionProviders,
   prepareDecisionProviderReload,
 } from "./runtime.js";
-import type {
-  DecisionProviderConfig,
-  DecisionProviderV1,
-  ProviderDecisionOutcome,
-} from "./types.js";
+import type { DecisionProviderV1, ProviderDecisionOutcome } from "./types.js";
 
 const batch = { state: "synthetic", questions: { check: { type: "boolean" as const } } };
 const answer: ProviderDecisionOutcome = {
@@ -56,7 +52,11 @@ const endpoint = (id = "judge"): ModelProviderConfig => ({
 
 type WireRequest = {
   id: string;
-  config: DecisionProviderConfig;
+  config: NonNullable<
+    ReturnType<
+      Parameters<NonNullable<DecisionProviderV1["createConfiguredProvider"]>>[0]["getConfig"]
+    >
+  >;
   context: Parameters<DecisionProviderV1["evaluate"]>[1];
 };
 
