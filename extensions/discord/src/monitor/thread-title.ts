@@ -18,6 +18,7 @@ export async function generateThreadTitle(params: {
   channelName?: string;
   channelDescription?: string;
   timeoutMs?: number;
+  maxSourceChars?: number;
 }): Promise<string | null> {
   const sourceText = params.messageText.trim();
   if (!sourceText) {
@@ -27,6 +28,7 @@ export async function generateThreadTitle(params: {
   try {
     const userMessage = buildThreadTitleCompletionUserMessage({
       sourceText,
+      maxSourceChars: params.maxSourceChars ?? MAX_THREAD_TITLE_SOURCE_CHARS,
       channelName: params.channelName,
       channelDescription: params.channelDescription,
     });
@@ -40,18 +42,19 @@ export async function generateThreadTitle(params: {
       maxLength: MAX_THREAD_TITLE_SOURCE_CHARS,
     });
     return generated ? normalizeGeneratedThreadTitle(generated) : null;
-  } catch (err) {
-    logVerbose(`thread-title: title generation failed for agent ${params.agentId}: ${String(err)}`);
+  } catch {
+    logVerbose(`thread-title: title generation failed for agent ${params.agentId}`);
     return null;
   }
 }
 
 function buildThreadTitleCompletionUserMessage(params: {
   sourceText: string;
+  maxSourceChars: number;
   channelName?: string;
   channelDescription?: string;
 }): string {
-  const sourceText = truncateThreadTitleText(params.sourceText, MAX_THREAD_TITLE_SOURCE_CHARS);
+  const sourceText = truncateThreadTitleText(params.sourceText, params.maxSourceChars);
   const channelName = normalizeTitleContextField(
     params.channelName,
     MAX_THREAD_TITLE_CHANNEL_NAME_CHARS,
