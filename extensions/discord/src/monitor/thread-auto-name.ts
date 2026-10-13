@@ -9,7 +9,7 @@ import { pruneMapToMaxSize } from "openclaw/plugin-sdk/collection-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { logVerbose } from "openclaw/plugin-sdk/runtime-env";
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
-import { getChannel, type Client } from "../internal/discord.js";
+import { DiscordError, getChannel, type Client } from "../internal/discord.js";
 import { editChannelDiscord } from "../send.channels.js";
 import { hasAnyChannelPermissionDiscord } from "../send.permissions.js";
 import { createDiscordLivePolicyReader, type DiscordLivePolicyReader } from "./live-policy.js";
@@ -362,10 +362,7 @@ export class DiscordThreadAutoNamer {
         { cfg: finalPolicy.cfg, accountId: this.params.accountId, rest: client.rest },
       );
     } catch (error) {
-      const status =
-        (error as { status?: unknown; statusCode?: unknown })?.status ??
-        (error as { statusCode?: unknown })?.statusCode;
-      if (status !== 403 && status !== 429) {
+      if (!(error instanceof DiscordError) || (error.status !== 403 && error.status !== 429)) {
         logVerbose(`discord: thread auto-name failed for ${threadId}`);
       }
     } finally {
