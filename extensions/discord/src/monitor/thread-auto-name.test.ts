@@ -1,6 +1,7 @@
 import type { GatewayMessageCreateDispatchData as APIMessage } from "discord-api-types/v10";
 import { GuildMemberFlags, PermissionFlagsBits } from "discord-api-types/v10";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type { OpenKeyedStoreOptions } from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
   createPluginStateKeyedStoreV2ForTests,
@@ -57,7 +58,10 @@ function config(threshold: number | boolean = 1): OpenClawConfig {
   };
 }
 
-function fixture(initial = config()) {
+function fixture(
+  initial = config(),
+  options: { queueRequests?: boolean; patchResponse?: () => Response } = {},
+) {
   let cfg = initial;
   let now = Date.now();
   let botPermission = true;
@@ -70,7 +74,7 @@ function fixture(initial = config()) {
       clientId: BOT,
       token: "synthetic-discord-token",
       requestOptions: {
-        queueRequests: false,
+        queueRequests: options.queueRequests ?? false,
         fetch: async (input, init) => {
           const path = new URL(
             input instanceof Request ? input.url : input instanceof URL ? input.href : input,
@@ -80,6 +84,9 @@ function fixture(initial = config()) {
               throw new Error("Expected serialized JSON PATCH body");
             }
             patches.push({ path, body: JSON.parse(init.body) });
+            if (options.patchResponse) {
+              return options.patchResponse();
+            }
             return Response.json(
               patchStatus === 200 ? { name: "Release planning" } : { message: "Denied" },
               { status: patchStatus },
@@ -367,6 +374,60 @@ describe("Discord thread naming through production admission and effects", () =>
         await f.namer.onMessage(f.message(id), f.client);
         expect(model).toHaveBeenCalledTimes(1);
         expect(f.patches).toEqual([]);
+      }),
+  );
+
+  it.each(["allowed", "threshold", "action", "stop"])(
+    "revalidates %s naming authority before a queued rate-limit retry",
+    async (kind) =>
+      isolated(async () => {
+        const firstPatch = createDeferred<void>();
+        let attempts = 0;
+        const f = fixture(config(), {
+          queueRequests: true,
+          patchResponse: () => {
+            if (++attempts > 1) {
+              return Response.json({ name: "Release planning" });
+            }
+            vi.useFakeTimers();
+            if (kind === "threshold") {
+              f.update({
+                channels: { discord: { ...f.cfg.channels!.discord!, thread: { autoName: false } } },
+              });
+            }
+            if (kind === "action") {
+              f.update({
+                channels: {
+                  discord: { ...f.cfg.channels!.discord!, actions: { channels: false } },
+                },
+              });
+            }
+            if (kind === "stop") {
+              f.namer.stop();
+            }
+            firstPatch.resolve();
+            return Response.json({ retry_after: 0.001 }, { status: 429 });
+          },
+        });
+        const id = f.thread();
+        const pending = f.namer.onMessage(f.message(id), f.client);
+        try {
+          await Promise.race([firstPatch.promise, pending]);
+          expect(attempts).toBe(1);
+          await vi.advanceTimersByTimeAsync(2);
+          await pending;
+          expect(model).toHaveBeenCalledTimes(1);
+          expect(attempts).toBe(kind === "allowed" ? 2 : 1);
+          expect(f.patches).toEqual(
+            Array.from({ length: kind === "allowed" ? 2 : 1 }, () => ({
+              path: `/channels/${id}`,
+              body: { name: "Release planning" },
+            })),
+          );
+        } finally {
+          vi.useRealTimers();
+          f.namer.stop();
+        }
       }),
   );
 

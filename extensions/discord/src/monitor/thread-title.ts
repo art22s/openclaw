@@ -19,6 +19,8 @@ export async function generateThreadTitle(params: {
   channelDescription?: string;
   timeoutMs?: number;
   maxSourceChars?: number;
+  abortSignal?: AbortSignal;
+  assertCurrent?: () => void;
 }): Promise<string | null> {
   const sourceText = params.messageText.trim();
   if (!sourceText) {
@@ -40,6 +42,8 @@ export async function generateThreadTitle(params: {
       ...(params.modelRef ? { modelRef: params.modelRef } : {}),
       timeoutMs: Math.max(100, Math.floor(params.timeoutMs ?? DEFAULT_THREAD_TITLE_TIMEOUT_MS)),
       maxLength: MAX_THREAD_TITLE_SOURCE_CHARS,
+      abortSignal: params.abortSignal,
+      assertCurrent: params.assertCurrent,
     });
     return generated ? normalizeGeneratedThreadTitle(generated) : null;
   } catch {
