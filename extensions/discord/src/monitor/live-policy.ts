@@ -53,6 +53,9 @@ export function createDiscordLivePolicyReader(params: {
   const authoredPolicyRevision = (cfg: OpenClawConfig) =>
     JSON.stringify({
       policy: selectDiscordLivePolicyConfig(mergeDiscordAccountConfig(cfg, params.accountId)),
+      enabled: cfg.channels?.discord?.enabled,
+      actions: cfg.channels?.discord?.actions,
+      thread: cfg.channels?.discord?.thread,
       defaultGroupPolicy: cfg.channels?.defaults?.groupPolicy,
     });
   const initialAuthoredPolicyRevision = authoredPolicyRevision(params.cfg);
