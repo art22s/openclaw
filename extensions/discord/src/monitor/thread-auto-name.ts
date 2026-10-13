@@ -10,6 +10,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { logVerbose } from "openclaw/plugin-sdk/runtime-env";
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import { DiscordError, getChannel, type Client } from "../internal/discord.js";
+import { withDiscordRequestAuthority } from "../internal/request-authority.js";
 import { editChannelDiscord } from "../send.channels.js";
 import { hasAnyChannelPermissionDiscord } from "../send.permissions.js";
 import { createDiscordLivePolicyReader, type DiscordLivePolicyReader } from "./live-policy.js";
@@ -104,6 +105,7 @@ function buildTranscript(lines: string[]): string {
 
 export class DiscordThreadAutoNamer {
   private stopped = false;
+  private readonly generationAbort = new AbortController();
   private readonly threads = new Map<string, ThreadState>();
   private readonly readPolicy: DiscordLivePolicyReader;
   private readonly state: DiscordThreadAutoNameState;
@@ -221,6 +223,7 @@ export class DiscordThreadAutoNamer {
 
   stop(): void {
     this.stopped = true;
+    this.generationAbort.abort();
     for (const state of this.threads.values()) {
       state.canceled = true;
     }
@@ -336,6 +339,12 @@ export class DiscordThreadAutoNamer {
         ),
         maxSourceChars: MAX_TRANSCRIPT_CHARS,
         timeoutMs: 15_000,
+        abortSignal: this.generationAbort.signal,
+        assertCurrent: () => {
+          if (!policy.isCurrent() || !this.active(threadId, state)) {
+            throw new Error("Discord thread naming authority is no longer current");
+          }
+        },
       });
       const title = generated && sanitizeDiscordAutoNameTitle(generated);
       if (!title || title === state.originalName || !this.active(threadId, state)) {
@@ -352,14 +361,22 @@ export class DiscordThreadAutoNamer {
       if (!(await this.canRename(state, threadId, client))) {
         return;
       }
-      // No awaited work remains between current contributor admission and the external rename.
       const finalPolicy = await this.access(threadId, state, client);
       if (!finalPolicy || !finalPolicy.isCurrent() || !this.active(threadId, state)) {
         return;
       }
-      await editChannelDiscord(
-        { channelId: threadId, name: title },
-        { cfg: finalPolicy.cfg, accountId: this.params.accountId, rest: client.rest },
+      // The REST scheduler retains this assertion across queueing and rate-limit retries.
+      await withDiscordRequestAuthority(
+        () => {
+          if (!finalPolicy.isCurrent() || !this.active(threadId, state)) {
+            throw new Error("Discord thread naming authority is no longer current");
+          }
+        },
+        () =>
+          editChannelDiscord(
+            { channelId: threadId, name: title },
+            { cfg: finalPolicy.cfg, accountId: this.params.accountId, rest: client.rest },
+          ),
       );
     } catch (error) {
       if (!(error instanceof DiscordError) || (error.status !== 403 && error.status !== 429)) {
