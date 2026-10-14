@@ -17,6 +17,7 @@ import {
   DiscordAutoNameMessageCreateListener,
   DiscordAutoNameThreadCreateListener,
 } from "./thread-auto-name.listeners.js";
+import { createNoopThreadBindingManager } from "./thread-bindings.session-adapter.js";
 
 // Fixed model-boundary response; admission, title assembly, REST serialization,
 // permission evaluation, and worker-backed persistence all execute production code.
@@ -237,9 +238,11 @@ function fixture(
 
 async function isolated(run: () => Promise<void>) {
   await withOpenClawTestState({ label: "discord-auto-name-boundary" }, async () => {
+    const threadBindings = createNoopThreadBindingManager("default");
     try {
       await run();
     } finally {
+      await threadBindings.stop();
       resetPluginStateStoreForTests();
     }
   });
@@ -290,6 +293,70 @@ describe("Discord thread naming through production admission and effects", () =>
       expect(model).toHaveBeenCalledTimes(1);
       expect(f.patches).toHaveLength(1);
     }));
+
+  it.each([21, 22])(
+    "names at threshold %s after the admitted human leaves the transcript window",
+    async (threshold) =>
+      isolated(async () => {
+        const f = fixture(config(threshold));
+        const id = f.thread();
+        await f.namer.onMessage(f.message(id, 1, ALLOWED, "Original human opener"), f.client);
+        for (let n = 2; n < threshold; n += 1) {
+          await f.namer.onMessage(f.message(id, n, BOT, `Release detail ${n}`), f.client);
+        }
+        expect(model).not.toHaveBeenCalled();
+        expect(f.patches).toEqual([]);
+
+        await f.namer.onMessage(
+          f.message(id, threshold, BOT, `Release detail ${threshold}`),
+          f.client,
+        );
+        expect(model).toHaveBeenCalledTimes(1);
+        expect(model.mock.calls[0]?.[0]?.userMessage).toBe(
+          `Message:\n${Array.from(
+            { length: 20 },
+            (_, index) => `Agent: Release detail ${threshold - 19 + index}`,
+          ).join("\n")}`,
+        );
+        expect(f.patches).toEqual([
+          { path: `/channels/${id}`, body: { name: "Release planning" } },
+        ]);
+
+        await f.namer.onMessage(f.message(id, threshold + 1, BOT), f.client);
+        expect(model).toHaveBeenCalledTimes(1);
+        expect(f.patches).toHaveLength(1);
+      }),
+  );
+
+  it.each(["before model", "during model"])(
+    "rejects human role revocation %s after the human leaves the transcript window",
+    async (when) =>
+      isolated(async () => {
+        const cfg = config(22);
+        cfg.channels!.discord!.guilds![GUILD]!.users = [];
+        cfg.channels!.discord!.guilds![GUILD]!.roles = [ROLE];
+        const f = fixture(cfg);
+        const id = f.thread();
+        await f.namer.onMessage(f.message(id, 1), f.client);
+        for (let n = 2; n <= 21; n += 1) {
+          await f.namer.onMessage(f.message(id, n, BOT, `Release detail ${n}`), f.client);
+        }
+        expect(model).not.toHaveBeenCalled();
+        expect(f.patches).toEqual([]);
+
+        if (when === "before model") {
+          f.revokeRole();
+        } else {
+          model.mockImplementationOnce(async () => {
+            f.revokeRole();
+            return "Release planning";
+          });
+        }
+        await f.namer.onMessage(f.message(id, 22, BOT, "Release detail 22"), f.client);
+        expect(model).toHaveBeenCalledTimes(when === "before model" ? 0 : 1);
+        expect(f.patches).toEqual([]);
+      }),
+  );
 
   it.each(["guild", "channel", "user", "role", "disabled", "action"])(
     "blocks %s denial before model and PATCH",

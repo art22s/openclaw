@@ -17,7 +17,7 @@ import { resolveDiscordThreadAutoNameThreshold } from "./thread-auto-name.config
 
 export type DiscordAutoNameContributor = Pick<
   APIMessage,
-  "id" | "channel_id" | "guild_id" | "author" | "member" | "content" | "webhook_id"
+  "channel_id" | "guild_id" | "author" | "member" | "webhook_id"
 >;
 
 /** The optional namer uses the same current guild/channel/member admission as replies. */
@@ -32,7 +32,7 @@ export async function resolveDiscordAutoNameAccess(params: {
   client: Client;
   contributors: DiscordAutoNameContributor[];
   refreshMembers?: boolean;
-}): Promise<DiscordLivePolicy | null> {
+}): Promise<{ policy: DiscordLivePolicy; humanRoleIds: string[] } | null> {
   try {
     const policy = await params.readPolicy();
     if (
@@ -99,6 +99,7 @@ export async function resolveDiscordAutoNameAccess(params: {
     const refreshedRoles = new Map<string, string[]>();
     let hasHuman = false;
     let hasAgent = false;
+    let humanRoleIds: string[] | undefined;
     for (const message of params.contributors) {
       if (
         message.channel_id !== params.threadId ||
@@ -144,8 +145,11 @@ export async function resolveDiscordAutoNameAccess(params: {
         return null;
       }
       hasHuman = true;
+      humanRoleIds ??= memberRoleIds;
     }
-    return policy.isCurrent() && (!hasAgent || hasHuman) ? policy : null;
+    return policy.isCurrent() && (!hasAgent || hasHuman)
+      ? { policy, humanRoleIds: humanRoleIds ?? [] }
+      : null;
   } catch {
     // Missing policy, channel, or member authority disables this optional effect.
     return null;

@@ -4,16 +4,18 @@ import {
   PermissionFlagsBits,
   type GatewayMessageCreateDispatchData as APIMessage,
 } from "discord-api-types/v10";
-import { resolveDefaultAgentId } from "openclaw/plugin-sdk/agent-scope-runtime";
 import { pruneMapToMaxSize } from "openclaw/plugin-sdk/collection-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { prepareSessionBindingInspections } from "openclaw/plugin-sdk/conversation-binding-runtime";
 import { logVerbose } from "openclaw/plugin-sdk/runtime-env";
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import { DiscordError, getChannel, type Client } from "../internal/discord.js";
 import { withDiscordRequestAuthority } from "../internal/request-authority.js";
 import { editChannelDiscord } from "../send.channels.js";
 import { hasAnyChannelPermissionDiscord } from "../send.permissions.js";
+import { resolveDiscordConversationBindingRoute } from "./conversation-binding-route.js";
 import { createDiscordLivePolicyReader, type DiscordLivePolicyReader } from "./live-policy.js";
+import { resolveDiscordConversationRoute } from "./route-resolution.js";
 import {
   resolveDiscordAutoNameAccess,
   type DiscordAutoNameContributor,
@@ -47,12 +49,15 @@ type ThreadState = {
   createdAt: number;
   count: number;
   lastMessageId: bigint;
-  messages: DiscordAutoNameContributor[];
+  messages: CollectedMessage[];
+  human?: DiscordAutoNameContributor;
   claimed: boolean;
   canceled: boolean;
   pending: Promise<void>;
   pendingCount: number;
 };
+
+type CollectedMessage = DiscordAutoNameContributor & Pick<APIMessage, "id" | "content">;
 
 function snowflakeTime(id: string): number | null {
   return /^\d{17,20}$/.test(id) ? Number(BigInt(id) >> 22n) + DISCORD_EPOCH_MS : null;
@@ -83,7 +88,7 @@ function isConversationMessage(message: APIMessage, botUserId: string): boolean 
   );
 }
 
-function formatTranscriptLine(message: DiscordAutoNameContributor, botUserId: string): string {
+function formatTranscriptLine(message: CollectedMessage, botUserId: string): string {
   const role = message.author.id === botUserId ? "Agent" : "User";
   const content = message.content?.replace(/\s+/g, " ").trim() || "[attachment]";
   return `${role}: ${truncateUtf16Safe(content, MAX_MESSAGE_CHARS)}`;
@@ -200,7 +205,7 @@ export class DiscordThreadAutoNamer {
       this.threads.delete(message.channel_id);
       return state.pending;
     }
-    const contributor: DiscordAutoNameContributor = {
+    const contributor: CollectedMessage = {
       id: message.id,
       channel_id: message.channel_id,
       guild_id: message.guild_id,
@@ -259,13 +264,14 @@ export class DiscordThreadAutoNamer {
       parentId: state.parentId,
       originalName: state.originalName,
       client,
-      contributors,
+      // The human authorizing agent traffic can outlive their text in the rolling window.
+      contributors: state.human ? [state.human, ...contributors] : contributors,
       refreshMembers,
     });
   }
 
   private async collectMessage(
-    message: DiscordAutoNameContributor,
+    message: CollectedMessage,
     state: ThreadState,
     client: Client,
   ): Promise<void> {
@@ -277,7 +283,8 @@ export class DiscordThreadAutoNamer {
     ) {
       return;
     }
-    const policy = await this.access(threadId, state, client, [...state.messages, message], false);
+    const access = await this.access(threadId, state, client, [...state.messages, message], false);
+    const policy = access?.policy;
     if (!policy || !policy.isCurrent() || !this.active(threadId, state)) {
       return;
     }
@@ -290,6 +297,14 @@ export class DiscordThreadAutoNamer {
     }
     state.lastMessageId = BigInt(message.id);
     state.count += 1;
+    if (message.author.id !== this.params.botUserId) {
+      state.human = {
+        channel_id: message.channel_id,
+        guild_id: message.guild_id,
+        author: message.author,
+        member: message.member,
+      };
+    }
     state.messages.push(message);
     if (state.messages.length > MAX_TRANSCRIPT_MESSAGES) {
       state.messages.shift();
@@ -316,14 +331,69 @@ export class DiscordThreadAutoNamer {
   }
 
   private async renameThread(threadId: string, state: ThreadState, client: Client): Promise<void> {
+    let bindingSelection: Awaited<ReturnType<typeof prepareSessionBindingInspections>> | undefined;
     try {
       if (!(await this.canRename(state, threadId, client))) {
         return;
       }
-      const policy = await this.access(threadId, state, client);
-      if (!policy || !policy.isCurrent() || !this.active(threadId, state)) {
+      const access = await this.access(threadId, state, client);
+      const policy = access?.policy;
+      if (
+        !access ||
+        !policy ||
+        !policy.isCurrent() ||
+        !policy.isConfigCurrent() ||
+        !this.active(threadId, state)
+      ) {
         return;
       }
+      const preparedBindings = await prepareSessionBindingInspections([
+        {
+          channel: "discord",
+          accountId: this.params.accountId,
+          conversationId: threadId,
+          parentConversationId: state.parentId,
+        },
+      ]);
+      bindingSelection = preparedBindings;
+      const resolveAgentId = (cfg = policy.cfg, humanRoleIds = access.humanRoleIds) => {
+        const { runtimeRoute, configuredRoute } = resolveDiscordConversationBindingRoute({
+          cfg,
+          accountId: this.params.accountId,
+          runtimeConversationId: threadId,
+          configuredConversationId: threadId,
+          parentConversationId: state.parentId,
+          inspection: preparedBindings.inspect()[0]!,
+          resolveRoute: ({ boundAgentId }) =>
+            resolveDiscordConversationRoute({
+              cfg,
+              defaultAgentId: boundAgentId,
+              accountId: this.params.accountId,
+              guildId: state.guildId,
+              memberRoleIds: humanRoleIds,
+              peer: { kind: "channel", id: threadId },
+              parentConversationId: state.parentId,
+            }),
+        });
+        if (runtimeRoute.bindingOwnerAvailable === false || runtimeRoute.pluginId) {
+          throw new Error("Discord thread naming has no available agent binding owner");
+        }
+        return (
+          runtimeRoute.boundAgentId ?? configuredRoute?.boundAgentId ?? runtimeRoute.route.agentId
+        );
+      };
+      const agentId = resolveAgentId();
+      const assertCurrent = () => {
+        if (
+          !policy.isCurrent() ||
+          !policy.isConfigCurrent() ||
+          !this.active(threadId, state) ||
+          resolveAgentId() !== agentId
+        ) {
+          throw new Error("Discord thread naming authority is no longer current");
+        }
+      };
+      assertCurrent();
       if (
         !(await this.state.reserveRename(state.parentId)) ||
         !policy.isCurrent() ||
@@ -331,20 +401,17 @@ export class DiscordThreadAutoNamer {
       ) {
         return;
       }
+      assertCurrent();
       const generated = await generateThreadTitle({
         cfg: policy.cfg,
-        agentId: resolveDefaultAgentId(policy.cfg),
+        agentId,
         messageText: buildTranscript(
           state.messages.map((message) => formatTranscriptLine(message, this.params.botUserId)),
         ),
         maxSourceChars: MAX_TRANSCRIPT_CHARS,
         timeoutMs: 15_000,
         abortSignal: this.generationAbort.signal,
-        assertCurrent: () => {
-          if (!policy.isCurrent() || !this.active(threadId, state)) {
-            throw new Error("Discord thread naming authority is no longer current");
-          }
-        },
+        assertCurrent,
       });
       const title = generated && sanitizeDiscordAutoNameTitle(generated);
       if (!title || title === state.originalName || !this.active(threadId, state)) {
@@ -361,14 +428,26 @@ export class DiscordThreadAutoNamer {
       if (!(await this.canRename(state, threadId, client))) {
         return;
       }
-      const finalPolicy = await this.access(threadId, state, client);
-      if (!finalPolicy || !finalPolicy.isCurrent() || !this.active(threadId, state)) {
+      const finalAccess = await this.access(threadId, state, client);
+      const finalPolicy = finalAccess?.policy;
+      if (
+        !finalAccess ||
+        !finalPolicy ||
+        !finalPolicy.isCurrent() ||
+        !this.active(threadId, state)
+      ) {
         return;
       }
       // The REST scheduler retains this assertion across queueing and rate-limit retries.
       await withDiscordRequestAuthority(
         () => {
-          if (!finalPolicy.isCurrent() || !this.active(threadId, state)) {
+          if (
+            !finalPolicy.isCurrent() ||
+            !policy.isConfigCurrent() ||
+            !finalPolicy.isConfigCurrent() ||
+            !this.active(threadId, state) ||
+            resolveAgentId(finalPolicy.cfg, finalAccess.humanRoleIds) !== agentId
+          ) {
             throw new Error("Discord thread naming authority is no longer current");
           }
         },
@@ -383,6 +462,7 @@ export class DiscordThreadAutoNamer {
         logVerbose(`discord: thread auto-name failed for ${threadId}`);
       }
     } finally {
+      bindingSelection?.dispose();
       if (this.threads.get(threadId) === state) {
         this.threads.delete(threadId);
       }
