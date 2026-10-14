@@ -13,6 +13,12 @@ import {
   resetPluginRuntimeStateForTest,
 } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { withOpenClawTestState, type OpenClawTestState } from "openclaw/plugin-sdk/test-state";
+import {
+  registerSessionBindingAdapterV2,
+  unregisterSessionBindingAdapter,
+  type SessionBindingAdapterV2,
+  type SessionBindingRecord,
+} from "openclaw/plugin-sdk/thread-bindings-session-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { Client } from "../internal/discord.js";
 import { createDiscordLivePolicyReader } from "./live-policy.js";
@@ -35,14 +41,22 @@ const PARENT = "223456789012345678";
 const BOT = "323456789012345678";
 const USER = "423456789012345678";
 const PROVIDER = "discord-title-fixture";
+const ASSIGNED_PROVIDER = "discord-assigned-title-fixture";
+const ASSIGNED_API_KEY = "synthetic-assigned-title-fixture-key";
+const ROUTE_ROLE = "523456789012345678";
 const HARNESS = "discord-title-fixture-harness";
 const API_KEY = "synthetic-title-fixture-key";
 const FIXTURE_HARNESS = Symbol.for("openclaw.discordTitleRuntimeTestHarness");
 
 type CompletionParams = Parameters<NonNullable<AgentHarness["runIsolatedCompletionV2"]>>[0];
+type RoutingScenario = "parent" | "account" | "role" | "bound";
 
-async function fixture(state: OpenClawTestState) {
+async function fixture(state: OpenClawTestState, routing?: RoutingScenario) {
   const pluginRoot = state.statePath("title-fixture-plugin");
+  const providerIds = routing ? [PROVIDER, ASSIGNED_PROVIDER] : [PROVIDER];
+  // Keep a released default marker so the old namer dispatches to the wrong provider,
+  // rather than stopping at ambiguous agent selection before reaching the regression.
+  const mainAgent = { workspace: state.workspaceDir, ...(routing ? { default: true } : {}) };
   const modelDefinitions = ["utility", "primary"].map((id) => ({
     id,
     name: id,
@@ -55,7 +69,15 @@ async function fixture(state: OpenClawTestState) {
   let cfg: OpenClawConfig = {
     meta: { migrations: { utilityModelSeparation: true } },
     agents: {
-      entries: { main: {} },
+      entries: routing
+        ? {
+            main: mainAgent,
+            assigned: {
+              model: { primary: `${ASSIGNED_PROVIDER}/primary` },
+              utilityModel: `${ASSIGNED_PROVIDER}/utility`,
+            },
+          }
+        : { main: mainAgent },
       defaults: {
         workspace: state.workspaceDir,
         model: { primary: `${PROVIDER}/primary` },
@@ -76,6 +98,17 @@ async function fixture(state: OpenClawTestState) {
           agentRuntime: { id: HARNESS },
           models: modelDefinitions,
         },
+        ...(routing
+          ? {
+              [ASSIGNED_PROVIDER]: {
+                baseUrl: "https://synthetic-assigned-title-fixture.invalid/v1",
+                api: "openai-completions" as const,
+                apiKey: ASSIGNED_API_KEY,
+                agentRuntime: { id: HARNESS },
+                models: modelDefinitions,
+              },
+            }
+          : {}),
       },
     },
     channels: {
@@ -87,11 +120,42 @@ async function fixture(state: OpenClawTestState) {
       },
     },
   };
+  if (routing) {
+    cfg.bindings = [
+      {
+        agentId: routing === "bound" ? "main" : "assigned",
+        match: {
+          channel: "discord",
+          accountId: "default",
+          ...(routing === "parent" || routing === "bound"
+            ? { peer: { kind: "channel" as const, id: PARENT } }
+            : routing === "role"
+              ? { guildId: GUILD, roles: [ROUTE_ROLE] }
+              : {}),
+        },
+      },
+    ];
+  }
   await state.writeConfig(cfg);
   await state.writeAuthProfiles({
     version: 1,
     profiles: { [`${PROVIDER}:fixture`]: { type: "api_key", provider: PROVIDER, key: API_KEY } },
   });
+  if (routing) {
+    await state.writeAuthProfiles(
+      {
+        version: 1,
+        profiles: {
+          [`${ASSIGNED_PROVIDER}:fixture`]: {
+            type: "api_key",
+            provider: ASSIGNED_PROVIDER,
+            key: ASSIGNED_API_KEY,
+          },
+        },
+      },
+      "assigned",
+    );
+  }
   const dispatches: CompletionParams[] = [];
   let beforePreparation: (() => void) | undefined;
   let afterUtilityFailure: (() => void) | undefined;
@@ -119,7 +183,7 @@ async function fixture(state: OpenClawTestState) {
           role: "assistant",
           content: [{ type: "text", text: "Release planning" }],
           api: "openai-completions",
-          provider: PROVIDER,
+          provider: params.provider,
           model: params.modelId,
           usage: {
             input: 1,
@@ -138,7 +202,7 @@ async function fixture(state: OpenClawTestState) {
   Reflect.set(globalThis, FIXTURE_HARNESS, harness);
   await state.writeJson("title-fixture-plugin/openclaw.plugin.json", {
     id: HARNESS,
-    providers: [PROVIDER],
+    providers: providerIds,
     configSchema: { type: "object", additionalProperties: false, properties: {} },
   });
   await state.writeJson("title-fixture-plugin/package.json", {
@@ -155,7 +219,9 @@ export default {
   register(api) {
     const harness = globalThis[Symbol.for("openclaw.discordTitleRuntimeTestHarness")];
     if (!harness) throw new Error("Missing synthetic title harness");
-    api.registerProvider({ id: ${JSON.stringify(PROVIDER)}, label: "Synthetic title provider", auth: [] });
+    for (const id of ${JSON.stringify(providerIds)}) {
+      api.registerProvider({ id, label: "Synthetic title provider", auth: [] });
+    }
     api.registerAgentHarness(harness);
   }
 };
@@ -166,6 +232,58 @@ export default {
   const snowflake = (sequence: number) =>
     ((BigInt(now - 1_420_070_400_000) << 22n) + BigInt(sequence)).toString();
   const threadId = snowflake(0);
+  let currentBinding: SessionBindingRecord | null =
+    routing === "bound"
+      ? {
+          bindingId: "synthetic-focused-thread",
+          conversation: {
+            channel: "discord",
+            accountId: "default",
+            conversationId: threadId,
+            parentConversationId: PARENT,
+          },
+          targetSessionKey: "agent:assigned:focused-title-session",
+          targetKind: "session",
+          status: "active",
+          boundAt: now,
+          metadata: { boundBy: USER },
+        }
+      : null;
+  let bindingOwnerActive = true;
+  const lookup = (ref: SessionBindingRecord["conversation"]) =>
+    ref.conversationId === threadId ? currentBinding : null;
+  const legacyRead = () => {
+    throw new Error("Title routing must not use synchronous binding compatibility reads");
+  };
+  const bindingAdapter: SessionBindingAdapterV2 = {
+    version: 2,
+    channel: "discord",
+    accountId: "default",
+    assertCurrent: () => {
+      if (!bindingOwnerActive) {
+        throw new Error("Synthetic binding owner was retired");
+      }
+    },
+    inspectByConversationsAsync: async (refs) => {
+      const bindings = refs.map(lookup);
+      return {
+        bindings,
+        assertCurrent: () => {
+          bindingAdapter.assertCurrent();
+          if (refs.some((ref, index) => lookup(ref) !== bindings[index])) {
+            throw new Error("Synthetic thread binding selection changed");
+          }
+        },
+      };
+    },
+    listBySession: legacyRead,
+    resolveByConversation: legacyRead,
+    listBySessionAsync: async () => [],
+    resolveByConversationAsync: async (ref) => lookup(ref),
+    inspectByConversationAsync: async (ref) => lookup(ref),
+    touchAsync: async () => {},
+  };
+  registerSessionBindingAdapterV2(bindingAdapter);
   const client = new Client(
     {
       clientId: BOT,
@@ -192,7 +310,10 @@ export default {
             });
           }
           if (path.startsWith(`/guilds/${GUILD}/members/`)) {
-            return Response.json({ roles: [], flags: GuildMemberFlags.CompletedOnboarding });
+            return Response.json({
+              roles: routing === "role" && path.endsWith(`/${USER}`) ? [ROUTE_ROLE] : [],
+              flags: GuildMemberFlags.CompletedOnboarding,
+            });
           }
           if (path === `/channels/${PARENT}`) {
             return Response.json({ id: PARENT, guild_id: GUILD, type: 0, name: "planning" });
@@ -285,8 +406,26 @@ export default {
       failUtility = true;
       afterUtilityFailure = callback;
     },
+    rebind: () => {
+      if (!currentBinding) {
+        throw new Error("Expected the focused thread binding");
+      }
+      currentBinding = { ...currentBinding, targetSessionKey: "agent:main:focused-title-session" };
+    },
+    reroute: () => {
+      cfg = {
+        ...cfg,
+        bindings: [{ agentId: "main", match: { channel: "discord", accountId: "default" } }],
+      };
+    },
     cleanup: async () => {
       namer.stop();
+      bindingOwnerActive = false;
+      unregisterSessionBindingAdapter({
+        channel: "discord",
+        accountId: "default",
+        adapter: bindingAdapter,
+      });
       const registry = getActivePluginRegistry();
       if (registry) {
         await disposePluginRegistryInstances(registry);
@@ -298,9 +437,12 @@ export default {
   };
 }
 
-async function isolated(run: (value: Awaited<ReturnType<typeof fixture>>) => Promise<void>) {
+async function isolated(
+  run: (value: Awaited<ReturnType<typeof fixture>>) => Promise<void>,
+  routing?: RoutingScenario,
+) {
   await withOpenClawTestState({ label: "discord-title-real-runtime" }, async (state) => {
-    const value = await fixture(state);
+    const value = await fixture(state, routing);
     try {
       await run(value);
     } finally {
@@ -310,6 +452,58 @@ async function isolated(run: (value: Awaited<ReturnType<typeof fixture>>) => Pro
 }
 
 describe("Discord auto-name through the conversation-label runtime", () => {
+  it.each(["parent", "account", "role", "bound"] as const)(
+    "keeps the transcript and credentials with the assigned agent through %s routing",
+    async (routing) =>
+      isolated(async (value) => {
+        await value.run();
+        expect(
+          value.dispatches.map(({ agentId, provider, modelId }) => ({
+            agentId,
+            provider,
+            modelId,
+          })),
+        ).toEqual([{ agentId: "assigned", provider: ASSIGNED_PROVIDER, modelId: "utility" }]);
+        expect(value.dispatches[0]?.authorization).toMatchObject({
+          owner: "host",
+          auth: { apiKey: ASSIGNED_API_KEY },
+        });
+        expect(value.dispatches[0]?.prompt).toContain("Plan the release");
+        expect(value.patches).toEqual([{ name: "Release planning" }]);
+      }, routing),
+  );
+
+  it.each([
+    { routing: "bound", phase: "preparation" },
+    { routing: "bound", phase: "fallback" },
+    { routing: "account", phase: "preparation" },
+    { routing: "account", phase: "fallback" },
+  ] as const)(
+    "stops title effects after $routing ownership changes during $phase",
+    async ({ routing, phase }) =>
+      isolated(async (value) => {
+        const changeOwner = routing === "bound" ? value.rebind : value.reroute;
+        if (phase === "preparation") {
+          value.prepare(changeOwner);
+        } else {
+          value.utilityFailure(changeOwner);
+        }
+        await value.run();
+        expect(
+          value.dispatches.map(({ agentId, provider, modelId }) => ({
+            agentId,
+            provider,
+            modelId,
+          })),
+        ).toEqual(
+          phase === "fallback"
+            ? [{ agentId: "assigned", provider: ASSIGNED_PROVIDER, modelId: "utility" }]
+            : [],
+        );
+        expect(value.patches).toEqual([]);
+      }, routing),
+  );
+
   it.each([false, true])(
     "dispatches allowed utility/primary completion (fallback=%s)",
     async (fallback) =>
