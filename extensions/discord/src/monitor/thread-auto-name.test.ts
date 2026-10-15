@@ -294,6 +294,15 @@ describe("Discord thread naming through production admission and effects", () =>
       expect(f.patches).toHaveLength(1);
     }));
 
+  it("preserves underscores in the generated Discord thread name", async () =>
+    isolated(async () => {
+      const f = fixture();
+      const id = f.thread();
+      model.mockResolvedValueOnce("snake_case_parser");
+      await f.namer.onMessage(f.message(id), f.client);
+      expect(f.patches).toEqual([{ path: `/channels/${id}`, body: { name: "snake_case_parser" } }]);
+    }));
+
   it.each([21, 22])(
     "names at threshold %s after the admitted human leaves the transcript window",
     async (threshold) =>

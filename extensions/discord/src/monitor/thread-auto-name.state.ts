@@ -5,6 +5,7 @@ import { getDiscordRuntime } from "../runtime.js";
 export const DISCORD_THREAD_AUTO_NAME_CLAIM_TTL_MS = 24 * 60 * 60_000;
 export const DISCORD_THREAD_AUTO_NAME_RATE_WINDOW_MS = 10 * 60_000;
 const MAX_ENTRIES = 10_000;
+const MAX_RENAMES_PER_WINDOW = 2;
 
 export class DiscordThreadAutoNameState {
   private readonly claimedStore: PluginStateKeyedStore<boolean, 2>;
@@ -73,7 +74,7 @@ export class DiscordThreadAutoNameState {
         const recent = (observed.value ?? []).filter(
           (at) => now - at < DISCORD_THREAD_AUTO_NAME_RATE_WINDOW_MS,
         );
-        if (recent.length >= 2) {
+        if (recent.length >= MAX_RENAMES_PER_WINDOW) {
           return false;
         }
         const result = await this.rateStore.compareAndApply(key, observed.comparison, {

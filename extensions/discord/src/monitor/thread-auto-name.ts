@@ -6,7 +6,6 @@ import {
 } from "discord-api-types/v10";
 import { pruneMapToMaxSize } from "openclaw/plugin-sdk/collection-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
-import type { prepareSessionBindingInspections } from "openclaw/plugin-sdk/conversation-binding-runtime";
 import { logVerbose } from "openclaw/plugin-sdk/runtime-env";
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import { DiscordError, getChannel, type Client } from "../internal/discord.js";
@@ -30,6 +29,7 @@ const MAX_TRACKED_THREADS = 10_000;
 const MAX_TRANSCRIPT_MESSAGES = 20;
 const MAX_MESSAGE_CHARS = 350;
 const MAX_TRANSCRIPT_CHARS = 1_800;
+const TITLE_GENERATION_TIMEOUT_MS = 15_000;
 const DISCORD_EPOCH_MS = 1_420_070_400_000;
 
 type ThreadCreateEvent = {
@@ -57,6 +57,12 @@ type ThreadState = {
 };
 
 type CollectedMessage = DiscordAutoNameContributor & Pick<APIMessage, "id" | "content">;
+type NamingAccess = NonNullable<Awaited<ReturnType<typeof resolveDiscordAutoNameAccess>>>;
+type PreparedNamingRoute = {
+  agentId: string;
+  assertCurrent: (access?: NamingAccess) => void;
+  dispose: () => void;
+};
 
 function snowflakeTime(id: string): number | null {
   return /^\d{17,20}$/.test(id) ? Number(BigInt(id) >> 22n) + DISCORD_EPOCH_MS : null;
@@ -66,7 +72,7 @@ export function sanitizeDiscordAutoNameTitle(raw: string): string | null {
   const title = raw
     .replace(/<@!?\d+>|<@&\d+>|<#\d+>/g, "")
     .replace(/\p{Cc}/gu, " ")
-    .replace(/\*|_|~|`|>|#|\|/g, "")
+    .replace(/\*|~|`|>|#|\|/g, "")
     .replace(/\s+/g, " ")
     .trim();
   return truncateUtf16Safe(title, 100).trim() || null;
@@ -311,6 +317,8 @@ export class DiscordThreadAutoNamer {
     if (state.count < resolveDiscordThreadAutoNameThreshold(policy.cfg, this.params.accountId)) {
       return;
     }
+    // Crossing the threshold spends the one attempt, even if permissions, budget,
+    // or a later config change prevent naming. The claim lasts until expiry or deletion.
     state.claimed = true;
     if (!(await this.state.claim(threadId)) || !this.active(threadId, state)) {
       this.threads.delete(threadId);
@@ -329,8 +337,119 @@ export class DiscordThreadAutoNamer {
     );
   }
 
+  private async prepareNamingRoute(
+    threadId: string,
+    state: ThreadState,
+    access: NamingAccess,
+  ): Promise<PreparedNamingRoute> {
+    const policy = access.policy;
+    const [{ prepareSessionBindingInspections }, { resolveDiscordConversationBindingRoute }] =
+      await Promise.all([
+        import("openclaw/plugin-sdk/conversation-binding-runtime"),
+        import("./conversation-binding-route.js"),
+      ]);
+    const preparedBindings = await prepareSessionBindingInspections([
+      {
+        channel: "discord",
+        accountId: this.params.accountId,
+        conversationId: threadId,
+        parentConversationId: state.parentId,
+      },
+    ]);
+    try {
+      // Role routing follows the retained human; another author's reply may use a different agent.
+      const resolveAgentId = (currentAccess = access) => {
+        const { cfg } = currentAccess.policy;
+        const [inspection] = preparedBindings.inspect();
+        if (!inspection) {
+          throw new Error("Discord thread naming binding inspection is missing");
+        }
+        const { runtimeRoute, configuredRoute } = resolveDiscordConversationBindingRoute({
+          cfg,
+          accountId: this.params.accountId,
+          runtimeConversationId: threadId,
+          configuredConversationId: threadId,
+          parentConversationId: state.parentId,
+          inspection,
+          resolveRoute: ({ boundAgentId }) =>
+            resolveDiscordConversationRoute({
+              cfg,
+              defaultAgentId: boundAgentId,
+              accountId: this.params.accountId,
+              guildId: state.guildId,
+              memberRoleIds: currentAccess.humanRoleIds,
+              peer: { kind: "channel", id: threadId },
+              parentConversationId: state.parentId,
+            }),
+        });
+        if (runtimeRoute.bindingOwnerAvailable === false || runtimeRoute.pluginId) {
+          throw new Error("Discord thread naming has no available agent binding owner");
+        }
+        return (
+          runtimeRoute.boundAgentId ?? configuredRoute?.boundAgentId ?? runtimeRoute.route.agentId
+        );
+      };
+      const agentId = resolveAgentId();
+      // Keep one prepared model/routing snapshot. A config change abandons this optional
+      // attempt without refunding its claim or any reserved budget.
+      const assertCurrent = (currentAccess = access) => {
+        if (
+          !policy.isCurrent() ||
+          !policy.isConfigCurrent() ||
+          !this.active(threadId, state) ||
+          resolveAgentId(currentAccess) !== agentId
+        ) {
+          throw new Error("Discord thread naming authority is no longer current");
+        }
+      };
+      return { agentId, assertCurrent, dispose: preparedBindings.dispose };
+    } catch (error) {
+      preparedBindings.dispose();
+      throw error;
+    }
+  }
+
+  private async applyThreadTitle(
+    threadId: string,
+    state: ThreadState,
+    client: Client,
+    title: string,
+    route: PreparedNamingRoute,
+  ): Promise<void> {
+    const current = await getChannel(client.rest, threadId);
+    if (
+      !("name" in current) ||
+      current.name !== state.originalName ||
+      !this.active(threadId, state)
+    ) {
+      return;
+    }
+    if (!(await this.canRename(state, threadId, client))) {
+      return;
+    }
+    const finalAccess = await this.access(threadId, state, client);
+    const finalPolicy = finalAccess?.policy;
+    if (!finalAccess || !finalPolicy || !finalPolicy.isCurrent() || !this.active(threadId, state)) {
+      return;
+    }
+    // The REST scheduler retains this assertion across queueing and rate-limit retries.
+    await withDiscordRequestAuthority(
+      () => {
+        if (!finalPolicy.isCurrent() || !finalPolicy.isConfigCurrent()) {
+          throw new Error("Discord thread naming authority is no longer current");
+        }
+        route.assertCurrent(finalAccess);
+      },
+      () =>
+        editChannelDiscord(
+          { channelId: threadId, name: title },
+          { cfg: finalPolicy.cfg, accountId: this.params.accountId, rest: client.rest },
+        ),
+    );
+  }
+
   private async renameThread(threadId: string, state: ThreadState, client: Client): Promise<void> {
-    let bindingSelection: Awaited<ReturnType<typeof prepareSessionBindingInspections>> | undefined;
+    let route: PreparedNamingRoute | undefined;
     try {
       if (!(await this.canRename(state, threadId, client))) {
         return;
@@ -346,61 +465,8 @@ export class DiscordThreadAutoNamer {
       ) {
         return;
       }
-      const [{ prepareSessionBindingInspections }, { resolveDiscordConversationBindingRoute }] =
-        await Promise.all([
-          import("openclaw/plugin-sdk/conversation-binding-runtime"),
-          import("./conversation-binding-route.js"),
-        ]);
-      const preparedBindings = await prepareSessionBindingInspections([
-        {
-          channel: "discord",
-          accountId: this.params.accountId,
-          conversationId: threadId,
-          parentConversationId: state.parentId,
-        },
-      ]);
-      bindingSelection = preparedBindings;
-      // Role routing follows the retained human; another author's reply may use a different agent.
-      const resolveAgentId = (cfg = policy.cfg, humanRoleIds = access.humanRoleIds) => {
-        const { runtimeRoute, configuredRoute } = resolveDiscordConversationBindingRoute({
-          cfg,
-          accountId: this.params.accountId,
-          runtimeConversationId: threadId,
-          configuredConversationId: threadId,
-          parentConversationId: state.parentId,
-          inspection: preparedBindings.inspect()[0]!,
-          resolveRoute: ({ boundAgentId }) =>
-            resolveDiscordConversationRoute({
-              cfg,
-              defaultAgentId: boundAgentId,
-              accountId: this.params.accountId,
-              guildId: state.guildId,
-              memberRoleIds: humanRoleIds,
-              peer: { kind: "channel", id: threadId },
-              parentConversationId: state.parentId,
-            }),
-        });
-        if (runtimeRoute.bindingOwnerAvailable === false || runtimeRoute.pluginId) {
-          throw new Error("Discord thread naming has no available agent binding owner");
-        }
-        return (
-          runtimeRoute.boundAgentId ?? configuredRoute?.boundAgentId ?? runtimeRoute.route.agentId
-        );
-      };
-      const agentId = resolveAgentId();
-      // Keep one prepared model/routing snapshot. A config change abandons this optional
-      // attempt without refunding its claim or any reserved budget.
-      const assertCurrent = () => {
-        if (
-          !policy.isCurrent() ||
-          !policy.isConfigCurrent() ||
-          !this.active(threadId, state) ||
-          resolveAgentId() !== agentId
-        ) {
-          throw new Error("Discord thread naming authority is no longer current");
-        }
-      };
-      assertCurrent();
+      route = await this.prepareNamingRoute(threadId, state, access);
+      route.assertCurrent();
       if (
         !(await this.state.reserveRename(state.parentId)) ||
         !policy.isCurrent() ||
@@ -408,68 +474,29 @@ export class DiscordThreadAutoNamer {
       ) {
         return;
       }
-      assertCurrent();
+      route.assertCurrent();
       const generated = await generateThreadTitle({
         cfg: policy.cfg,
-        agentId,
+        agentId: route.agentId,
         messageText: buildTranscript(
           state.messages.map((message) => formatTranscriptLine(message, this.params.botUserId)),
         ),
         maxSourceChars: MAX_TRANSCRIPT_CHARS,
-        timeoutMs: 15_000,
+        timeoutMs: TITLE_GENERATION_TIMEOUT_MS,
         abortSignal: this.generationAbort.signal,
-        assertCurrent,
+        assertCurrent: route.assertCurrent,
       });
       const title = generated && sanitizeDiscordAutoNameTitle(generated);
       if (!title || title === state.originalName || !this.active(threadId, state)) {
         return;
       }
-      const current = await getChannel(client.rest, threadId);
-      if (
-        !("name" in current) ||
-        current.name !== state.originalName ||
-        !this.active(threadId, state)
-      ) {
-        return;
-      }
-      if (!(await this.canRename(state, threadId, client))) {
-        return;
-      }
-      const finalAccess = await this.access(threadId, state, client);
-      const finalPolicy = finalAccess?.policy;
-      if (
-        !finalAccess ||
-        !finalPolicy ||
-        !finalPolicy.isCurrent() ||
-        !this.active(threadId, state)
-      ) {
-        return;
-      }
-      // The REST scheduler retains this assertion across queueing and rate-limit retries.
-      await withDiscordRequestAuthority(
-        () => {
-          if (
-            !finalPolicy.isCurrent() ||
-            !policy.isConfigCurrent() ||
-            !finalPolicy.isConfigCurrent() ||
-            !this.active(threadId, state) ||
-            resolveAgentId(finalPolicy.cfg, finalAccess.humanRoleIds) !== agentId
-          ) {
-            throw new Error("Discord thread naming authority is no longer current");
-          }
-        },
-        () =>
-          editChannelDiscord(
-            { channelId: threadId, name: title },
-            { cfg: finalPolicy.cfg, accountId: this.params.accountId, rest: client.rest },
-          ),
-      );
+      await this.applyThreadTitle(threadId, state, client, title, route);
     } catch (error) {
       if (!(error instanceof DiscordError) || (error.status !== 403 && error.status !== 429)) {
         logVerbose(`discord: thread auto-name failed for ${threadId}`);
       }
     } finally {
-      bindingSelection?.dispose();
+      route?.dispose();
       if (this.threads.get(threadId) === state) {
         this.threads.delete(threadId);
       }
