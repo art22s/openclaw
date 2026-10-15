@@ -33,7 +33,7 @@ afterEach(() => clearRuntimeConfigSnapshot());
 
 describe("Discord live account policy", () => {
   it.each(["default", "work"])(
-    "invalidates enablement, action, and auto-name policy for %s while restart is deferred",
+    "retains access policy while invalidating the naming snapshot for %s startup edits",
     async (accountId) => {
       const cfg: OpenClawConfig = {
         channels: {
@@ -58,7 +58,7 @@ describe("Discord live account policy", () => {
       };
       publish(cfg);
       const read = createDiscordLivePolicyReader({ cfg, accountId });
-      let previous = await read();
+      const previous = await read();
       for (const change of [
         { enabled: false },
         { actions: { channels: false } },
@@ -66,19 +66,21 @@ describe("Discord live account policy", () => {
         { thread: { autoName: 10 } },
       ] as const) {
         const discord = cfg.channels!.discord!;
-        publish({
+        const updated: OpenClawConfig = {
           channels: {
             discord:
               accountId === "default"
                 ? { ...discord, ...change }
                 : { ...discord, accounts: { work: { ...discord.accounts!.work, ...change } } },
           },
-        });
-        expect(previous.isCurrent()).toBe(false);
+        };
+        publish(updated);
+        expect(previous.isCurrent()).toBe(true);
+        expect(previous.isConfigCurrent()).toBe(false);
         const current = await read();
         expect(current.isCurrent()).toBe(true);
-        expect(current.discordConfig).toMatchObject(change);
-        previous = current;
+        expect(current.isConfigCurrent()).toBe(true);
+        expect(current.cfg).toBe(updated);
       }
     },
   );

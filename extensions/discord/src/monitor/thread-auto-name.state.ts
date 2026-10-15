@@ -9,7 +9,6 @@ const MAX_ENTRIES = 10_000;
 export class DiscordThreadAutoNameState {
   private readonly claimedStore: PluginStateKeyedStore<boolean, 2>;
   private readonly rateStore: PluginStateKeyedStore<number[], 2>;
-  private initialization: Promise<boolean> | undefined;
 
   constructor(
     private readonly params: {
@@ -37,18 +36,7 @@ export class DiscordThreadAutoNameState {
       });
   }
 
-  initialize(): Promise<boolean> {
-    this.initialization ??= this.initializeClaims().catch(() => {
-      logVerbose("discord: thread auto-name claim initialization failed");
-      return false;
-    });
-    return this.initialization;
-  }
-
   async hasClaim(threadId: string): Promise<boolean> {
-    if (!(await this.initialize())) {
-      return true;
-    }
     try {
       return (await this.claimedStore.lookup(this.key(threadId))) === true;
     } catch {
@@ -58,9 +46,6 @@ export class DiscordThreadAutoNameState {
   }
 
   async claim(threadId: string): Promise<boolean> {
-    if (!(await this.initialize())) {
-      return false;
-    }
     try {
       return await this.claimedStore.registerIfAbsent(this.key(threadId), true, {
         ttlMs: DISCORD_THREAD_AUTO_NAME_CLAIM_TTL_MS,
@@ -72,9 +57,6 @@ export class DiscordThreadAutoNameState {
   }
 
   async deleteClaim(threadId: string): Promise<void> {
-    if (!(await this.initialize())) {
-      return;
-    }
     try {
       await this.claimedStore.delete(this.key(threadId));
     } catch {
@@ -83,9 +65,6 @@ export class DiscordThreadAutoNameState {
   }
 
   async reserveRename(parentId: string): Promise<boolean> {
-    if (!(await this.initialize())) {
-      return false;
-    }
     try {
       const key = this.key(parentId);
       let observed = await this.rateStore.observe(key);
@@ -112,41 +91,6 @@ export class DiscordThreadAutoNameState {
       logVerbose("discord: thread auto-name rename budget unavailable");
       return false;
     }
-  }
-
-  private async initializeClaims(): Promise<boolean> {
-    const entries = await this.claimedStore.entries();
-    for (const entry of entries) {
-      if (entry.expiresAt !== undefined) {
-        continue;
-      }
-      // Read metadata after the observation so its comparison protects the repair,
-      // including against another initializer or a replacement claim.
-      for (;;) {
-        const observed = await this.claimedStore.observe(entry.key);
-        const [current] = await this.claimedStore.entriesInKeyRange({
-          keyStartInclusive: entry.key,
-          keyEndExclusive: `${entry.key}\0`,
-          limit: 1,
-        });
-        if (!current || current.expiresAt !== undefined) {
-          break;
-        }
-        const remainingTtlMs =
-          current.createdAt + DISCORD_THREAD_AUTO_NAME_CLAIM_TTL_MS - this.now();
-        const result = await this.claimedStore.compareAndApply(
-          entry.key,
-          observed.comparison,
-          remainingTtlMs <= 0
-            ? { operation: "delete", action: "delete" }
-            : { operation: "update", action: "set", value: current.value, ttlMs: remainingTtlMs },
-        );
-        if (result.status !== "conflict") {
-          break;
-        }
-      }
-    }
-    return true;
   }
 
   private key(id: string): string {

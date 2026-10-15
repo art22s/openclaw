@@ -67,7 +67,7 @@ type SeedEntry = {
   key: string;
   value: boolean | number[];
   createdAt: number;
-  expiresAt?: number;
+  expiresAt: number;
 };
 
 async function seedEntries(state: OpenClawTestState, entries: SeedEntry[]): Promise<void> {
@@ -85,7 +85,7 @@ async function seedEntries(state: OpenClawTestState, entries: SeedEntry[]): Prom
       entry_key: entry.key,
       value_json: JSON.stringify(entry.value),
       created_at: entry.createdAt,
-      expires_at: entry.expiresAt ?? null,
+      expires_at: entry.expiresAt,
     }));
     executeSqliteQuerySync(db, kysely.insertInto("plugin_state_entries").values(rows));
   }
@@ -99,62 +99,32 @@ async function closeStores(): Promise<void> {
 }
 
 describe("DiscordThreadAutoNameState worker persistence", () => {
-  it("upgrades legacy booleans without clearing sibling accounts and deletes completed lifecycles", async () => {
-    await withOpenClawTestState({ label: "discord-auto-name-legacy" }, async (state) => {
-      const now = Date.now();
-      const createdAt = now - 60 * 60_000;
-      await seedEntries(state, [
-        { namespace: CLAIMS_NAMESPACE, key: "work:fresh", value: true, createdAt },
-        {
-          namespace: CLAIMS_NAMESPACE,
-          key: "work:expired",
-          value: true,
-          createdAt: now - DISCORD_THREAD_AUTO_NAME_CLAIM_TTL_MS - 1,
-        },
-        {
-          namespace: CLAIMS_NAMESPACE,
-          key: "sibling:keep",
-          value: true,
-          createdAt,
-        },
-      ]);
-      await seedEntries(state, [
-        {
-          namespace: CLAIMS_NAMESPACE,
-          key: "inactive:expired",
-          value: true,
-          createdAt: now - DISCORD_THREAD_AUTO_NAME_CLAIM_TTL_MS - 1,
-        },
-      ]);
+  it("persists expiring claims across a physical reopen and deletes only the owning account's claim", async () => {
+    await withOpenClawTestState({ label: "discord-auto-name-claims" }, async () => {
       const observation = observeHostDataSql();
       try {
         const storage = new DiscordThreadAutoNameState({ accountId: "work" });
-        expect(await storage.initialize()).toBe(true);
-        const claims = openClaims();
-        const entries = await claims.entries();
+        const sibling = new DiscordThreadAutoNameState({ accountId: "sibling" });
+        expect(await storage.claim("thread")).toBe(true);
+        expect(await storage.claim("thread")).toBe(false);
+        expect(await sibling.claim("thread")).toBe(true);
+        await closeStores();
+
+        const restarted = new DiscordThreadAutoNameState({ accountId: "work" });
+        expect(await restarted.hasClaim("thread")).toBe(true);
+        expect(await restarted.claim("thread")).toBe(false);
+        const entries = await openClaims().entries();
         expect(entries.map((entry) => entry.key).toSorted()).toEqual([
-          "sibling:keep",
-          "work:fresh",
+          "sibling:thread",
+          "work:thread",
         ]);
-        const fresh = entries.find((entry) => entry.key === "work:fresh")!;
-        expect(fresh.value).toBe(true);
-        expect(fresh.expiresAt!).toBeGreaterThanOrEqual(
-          createdAt + DISCORD_THREAD_AUTO_NAME_CLAIM_TTL_MS,
-        );
-        expect(fresh.expiresAt!).toBeLessThan(
-          createdAt + DISCORD_THREAD_AUTO_NAME_CLAIM_TTL_MS + 5_000,
-        );
-        expect(entries.find((entry) => entry.key === "sibling:keep")!.expiresAt).toBeGreaterThan(
-          now,
-        );
-        expect(await storage.claim("fresh")).toBe(false);
-        expect(await storage.hasClaim("expired")).toBe(false);
-        expect(await storage.claim("new")).toBe(true);
-        const created = (await claims.entries()).find((entry) => entry.key === "work:new")!;
-        expect(created.expiresAt! - created.createdAt).toBe(DISCORD_THREAD_AUTO_NAME_CLAIM_TTL_MS);
-        await storage.deleteClaim("new");
-        expect(await storage.hasClaim("new")).toBe(false);
-        expect(await storage.hasClaim("fresh")).toBe(true);
+        for (const entry of entries) {
+          expect(entry.value).toBe(true);
+          expect(entry.expiresAt! - entry.createdAt).toBe(DISCORD_THREAD_AUTO_NAME_CLAIM_TTL_MS);
+        }
+        await restarted.deleteClaim("thread");
+        expect(await restarted.hasClaim("thread")).toBe(false);
+        expect(await sibling.hasClaim("thread")).toBe(true);
         expect(observation.queries).toEqual([]);
       } finally {
         observation.restore();

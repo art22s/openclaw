@@ -6,14 +6,13 @@ import {
 } from "discord-api-types/v10";
 import { pruneMapToMaxSize } from "openclaw/plugin-sdk/collection-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
-import { prepareSessionBindingInspections } from "openclaw/plugin-sdk/conversation-binding-runtime";
+import type { prepareSessionBindingInspections } from "openclaw/plugin-sdk/conversation-binding-runtime";
 import { logVerbose } from "openclaw/plugin-sdk/runtime-env";
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import { DiscordError, getChannel, type Client } from "../internal/discord.js";
 import { withDiscordRequestAuthority } from "../internal/request-authority.js";
 import { editChannelDiscord } from "../send.channels.js";
 import { hasAnyChannelPermissionDiscord } from "../send.permissions.js";
-import { resolveDiscordConversationBindingRoute } from "./conversation-binding-route.js";
 import { createDiscordLivePolicyReader, type DiscordLivePolicyReader } from "./live-policy.js";
 import { resolveDiscordConversationRoute } from "./route-resolution.js";
 import {
@@ -288,7 +287,7 @@ export class DiscordThreadAutoNamer {
     if (!policy || !policy.isCurrent() || !this.active(threadId, state)) {
       return;
     }
-    if (!(await this.state.initialize()) || (await this.state.hasClaim(threadId))) {
+    if (await this.state.hasClaim(threadId)) {
       this.threads.delete(threadId);
       return;
     }
@@ -347,6 +346,11 @@ export class DiscordThreadAutoNamer {
       ) {
         return;
       }
+      const [{ prepareSessionBindingInspections }, { resolveDiscordConversationBindingRoute }] =
+        await Promise.all([
+          import("openclaw/plugin-sdk/conversation-binding-runtime"),
+          import("./conversation-binding-route.js"),
+        ]);
       const preparedBindings = await prepareSessionBindingInspections([
         {
           channel: "discord",
@@ -356,6 +360,7 @@ export class DiscordThreadAutoNamer {
         },
       ]);
       bindingSelection = preparedBindings;
+      // Role routing follows the retained human; another author's reply may use a different agent.
       const resolveAgentId = (cfg = policy.cfg, humanRoleIds = access.humanRoleIds) => {
         const { runtimeRoute, configuredRoute } = resolveDiscordConversationBindingRoute({
           cfg,
@@ -383,6 +388,8 @@ export class DiscordThreadAutoNamer {
         );
       };
       const agentId = resolveAgentId();
+      // Keep one prepared model/routing snapshot. A config change abandons this optional
+      // attempt without refunding its claim or any reserved budget.
       const assertCurrent = () => {
         if (
           !policy.isCurrent() ||
