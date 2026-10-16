@@ -102,9 +102,9 @@ export class DiscordEntityCache {
       return;
     }
     const raw = data && typeof data === "object" ? (data as Record<string, unknown>) : {};
+    const user = raw.user && typeof raw.user === "object" ? (raw.user as { id?: unknown }) : {};
     if (kind === "member" || kind === "removed-guild" || kind === "guild-members") {
       const guildId = kind === "removed-guild" ? raw.id : raw.guild_id;
-      const user = raw.user && typeof raw.user === "object" ? (raw.user as { id?: unknown }) : {};
       for (const authority of this.memberAuthorities) {
         if (
           authority.guildId === guildId &&
@@ -119,7 +119,6 @@ export class DiscordEntityCache {
     }
     if (kind === "member") {
       const guildId = raw.guild_id;
-      const user = raw.user && typeof raw.user === "object" ? (raw.user as { id?: unknown }) : {};
       if (typeof guildId === "string" && typeof user.id === "string") {
         this.entries.delete(`member:${guildId}:${user.id}`);
         this.entries.delete(`user:${user.id}`);

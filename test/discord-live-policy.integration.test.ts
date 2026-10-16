@@ -84,9 +84,14 @@ describe("Discord admission through Gateway policy publication", () => {
       pluginId: "discord",
       artifactBasename: "api.js",
     });
-    setActivePluginRegistry(
-      createTestRegistry([{ pluginId: "discord", plugin: discordPlugin, source: "synthetic" }]),
-    );
+    const builder = createRuntimeTestRegistry(createPluginRuntime());
+    const api = builder.createApi(createPluginRecord({ id: "discord", origin: "bundled" }), {
+      config: {},
+      registrationMode: "full",
+    });
+    api.registerChannel({ plugin: discordPlugin });
+    fixtureRegistry = builder.registry;
+    setActivePluginRegistry(builder.registry);
     const lifecycleChanges = [
       "enabled",
       "actions.channels",
