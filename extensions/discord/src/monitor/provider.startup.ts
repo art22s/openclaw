@@ -52,7 +52,7 @@ import {
 type DiscordAutoPresenceController = ReturnType<typeof createDiscordAutoPresenceController>;
 type DiscordListenerConfig = {
   dangerouslyAllowNameMatching?: boolean;
-  intents?: { presence?: boolean };
+  intents?: { presence?: boolean; guildMembers?: boolean };
 };
 type CreateClientFn = (
   options: ConstructorParameters<typeof Client>[0],
@@ -237,32 +237,38 @@ export function registerDiscordMonitorListeners(params: {
 
   let autoNamer: DiscordThreadAutoNamer | undefined;
   if (params.botUserId && resolveDiscordThreadAutoNameThreshold(params.cfg, params.accountId) > 0) {
-    try {
-      const namer = new DiscordThreadAutoNamer({
-        cfg: params.cfg,
-        readPolicy: params.readPolicy,
-        accountId: params.accountId,
-        botUserId: params.botUserId,
-      });
-      autoNamer = namer;
-      registerDiscordListener(
-        params.client.listeners,
-        new DiscordAutoNameThreadCreateListener(namer),
+    if (!params.discordConfig.intents?.guildMembers) {
+      params.runtime.log?.(
+        "discord: thread auto-name requires intents.guildMembers and the Server Members Intent in the Discord Developer Portal",
       );
-      registerDiscordListener(
-        params.client.listeners,
-        new DiscordAutoNameMessageCreateListener(namer),
-      );
-      registerDiscordListener(
-        params.client.listeners,
-        new DiscordAutoNameThreadUpdateListener(namer),
-      );
-      registerDiscordListener(
-        params.client.listeners,
-        new DiscordAutoNameThreadDeleteListener(namer),
-      );
-    } catch {
-      // A missing optional state store must not prevent Discord startup.
+    } else {
+      try {
+        const namer = new DiscordThreadAutoNamer({
+          cfg: params.cfg,
+          readPolicy: params.readPolicy,
+          accountId: params.accountId,
+          botUserId: params.botUserId,
+        });
+        autoNamer = namer;
+        registerDiscordListener(
+          params.client.listeners,
+          new DiscordAutoNameThreadCreateListener(namer),
+        );
+        registerDiscordListener(
+          params.client.listeners,
+          new DiscordAutoNameMessageCreateListener(namer),
+        );
+        registerDiscordListener(
+          params.client.listeners,
+          new DiscordAutoNameThreadUpdateListener(namer),
+        );
+        registerDiscordListener(
+          params.client.listeners,
+          new DiscordAutoNameThreadDeleteListener(namer),
+        );
+      } catch {
+        // A missing optional state store must not prevent Discord startup.
+      }
     }
   }
 

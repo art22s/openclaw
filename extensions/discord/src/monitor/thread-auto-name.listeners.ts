@@ -8,8 +8,7 @@ import { DiscordThreadAutoNamer } from "./thread-auto-name.js";
 
 export class DiscordAutoNameThreadCreateListener {
   readonly type = GatewayDispatchEvents.ThreadCreate;
-  constructor(private readonly namer: DiscordThreadAutoNamer) {
-  }
+  constructor(private readonly namer: DiscordThreadAutoNamer) {}
 
   handle(data: ListenerDataByEvent[GatewayDispatchEvents.ThreadCreate]): void {
     try {
@@ -22,8 +21,7 @@ export class DiscordAutoNameThreadCreateListener {
 
 export class DiscordAutoNameMessageCreateListener {
   readonly type = GatewayDispatchEvents.MessageCreate;
-  constructor(private readonly namer: DiscordThreadAutoNamer) {
-  }
+  constructor(private readonly namer: DiscordThreadAutoNamer) {}
 
   handle(data: ListenerDataByEvent[GatewayDispatchEvents.MessageCreate], client: Client): void {
     try {
@@ -37,8 +35,7 @@ export class DiscordAutoNameMessageCreateListener {
 
 export class DiscordAutoNameThreadUpdateListener {
   readonly type = GatewayDispatchEvents.ThreadUpdate;
-  constructor(private readonly namer: DiscordThreadAutoNamer) {
-  }
+  constructor(private readonly namer: DiscordThreadAutoNamer) {}
 
   handle(data: ListenerDataByEvent[GatewayDispatchEvents.ThreadUpdate]): void {
     try {
@@ -51,8 +48,7 @@ export class DiscordAutoNameThreadUpdateListener {
 
 export class DiscordAutoNameThreadDeleteListener {
   readonly type = GatewayDispatchEvents.ThreadDelete;
-  constructor(private readonly namer: DiscordThreadAutoNamer) {
-  }
+  constructor(private readonly namer: DiscordThreadAutoNamer) {}
 
   handle(data: ListenerDataByEvent[GatewayDispatchEvents.ThreadDelete]): void {
     this.namer.onThreadDelete(data.id);

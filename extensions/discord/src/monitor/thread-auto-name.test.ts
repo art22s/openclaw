@@ -1,5 +1,10 @@
 import type { GatewayMessageCreateDispatchData as APIMessage } from "discord-api-types/v10";
-import { GuildMemberFlags, PermissionFlagsBits } from "discord-api-types/v10";
+import {
+  GatewayDispatchEvents,
+  GatewayIntentBits,
+  GuildMemberFlags,
+  PermissionFlagsBits,
+} from "discord-api-types/v10";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type { OpenKeyedStoreOptions } from "openclaw/plugin-sdk/plugin-state-runtime";
@@ -10,6 +15,7 @@ import {
 import { withOpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Client } from "../internal/discord.js";
+import { GatewayPlugin } from "../internal/gateway.js";
 import { createDiscordLivePolicyReader } from "./live-policy.js";
 import { resolveDiscordThreadAutoNameThreshold } from "./thread-auto-name.config.js";
 import { DiscordThreadAutoNamer, sanitizeDiscordAutoNameTitle } from "./thread-auto-name.js";
@@ -53,6 +59,7 @@ function config(threshold: number | boolean = 1): OpenClawConfig {
         token: "synthetic-discord-token",
         groupPolicy: "allowlist",
         thread: { autoName: threshold },
+        intents: { guildMembers: true },
         guilds: { [GUILD]: { users: [ALLOWED], channels: { [PARENT]: {} } } },
       },
     },
@@ -136,6 +143,9 @@ function fixture(
     },
     {},
   );
+  const gateway = new GatewayPlugin({ intents: GatewayIntentBits.GuildMembers });
+  gateway.isConnected = true; // Fixed transport state; no live socket or credentials.
+  client.plugins.push(gateway);
   const readPolicy = createDiscordLivePolicyReader({
     cfg,
     readConfig: () => cfg,
@@ -204,6 +214,7 @@ function fixture(
   }
   return {
     namer,
+    gateway,
     makeNamer,
     client,
     thread,
@@ -453,57 +464,102 @@ describe("Discord thread naming through production admission and effects", () =>
       }),
   );
 
-  it.each(["allowed", "threshold", "action", "stop"])(
-    "revalidates %s naming authority before a queued rate-limit retry",
+  it.each([
+    "allowed",
+    "threshold",
+    "action",
+    "stop",
+    "role",
+    "member-remove",
+    "role-delete",
+    "resumed",
+  ])("revalidates %s naming authority before a queued rate-limit retry", async (kind) =>
+    isolated(async () => {
+      const firstPatch = createDeferred<void>();
+      let attempts = 0;
+      const cfg = config();
+      cfg.channels!.discord!.guilds![GUILD]!.roles = [ROLE];
+      cfg.channels!.discord!.guilds![GUILD]!.users = [];
+      const f = fixture(cfg, {
+        queueRequests: true,
+        patchResponse: () => {
+          if (++attempts > 1) {
+            return Response.json({ name: "Release planning" });
+          }
+          vi.useFakeTimers();
+          if (kind === "threshold") {
+            f.update({
+              channels: { discord: { ...f.cfg.channels!.discord!, thread: { autoName: false } } },
+            });
+          }
+          if (kind === "action") {
+            f.update({
+              channels: {
+                discord: { ...f.cfg.channels!.discord!, actions: { channels: false } },
+              },
+            });
+          }
+          if (kind === "stop") {
+            f.namer.stop();
+          }
+          if (kind === "role" || kind === "member-remove") {
+            f.revokeRole();
+            void f.client.dispatchGatewayEvent(
+              kind === "role"
+                ? GatewayDispatchEvents.GuildMemberUpdate
+                : GatewayDispatchEvents.GuildMemberRemove,
+              { guild_id: GUILD, user: { id: ALLOWED }, roles: [] },
+            );
+          }
+          if (kind === "role-delete") {
+            void f.client.dispatchGatewayEvent(GatewayDispatchEvents.GuildRoleDelete, {
+              guild_id: GUILD,
+              role_id: ROLE,
+            });
+          }
+          if (kind === "resumed") {
+            void f.client.dispatchGatewayEvent(GatewayDispatchEvents.Resumed, {});
+          }
+          firstPatch.resolve();
+          return Response.json({ retry_after: 0.001 }, { status: 429 });
+        },
+      });
+      const id = f.thread();
+      const pending = f.namer.onMessage(f.message(id), f.client);
+      try {
+        await Promise.race([firstPatch.promise, pending]);
+        expect(attempts).toBe(1);
+        await vi.advanceTimersByTimeAsync(2);
+        await pending;
+        expect(model).toHaveBeenCalledTimes(1);
+        expect(attempts).toBe(kind === "allowed" ? 2 : 1);
+        expect(f.patches).toEqual(
+          Array.from({ length: kind === "allowed" ? 2 : 1 }, () => ({
+            path: `/channels/${id}`,
+            body: { name: "Release planning" },
+          })),
+        );
+      } finally {
+        vi.useRealTimers();
+        f.namer.stop();
+      }
+    }),
+  );
+
+  it.each(["intent", "connection"] as const)(
+    "skips optional naming without current member-event %s authority",
     async (kind) =>
       isolated(async () => {
-        const firstPatch = createDeferred<void>();
-        let attempts = 0;
-        const f = fixture(config(), {
-          queueRequests: true,
-          patchResponse: () => {
-            if (++attempts > 1) {
-              return Response.json({ name: "Release planning" });
-            }
-            vi.useFakeTimers();
-            if (kind === "threshold") {
-              f.update({
-                channels: { discord: { ...f.cfg.channels!.discord!, thread: { autoName: false } } },
-              });
-            }
-            if (kind === "action") {
-              f.update({
-                channels: {
-                  discord: { ...f.cfg.channels!.discord!, actions: { channels: false } },
-                },
-              });
-            }
-            if (kind === "stop") {
-              f.namer.stop();
-            }
-            firstPatch.resolve();
-            return Response.json({ retry_after: 0.001 }, { status: 429 });
-          },
-        });
-        const id = f.thread();
-        const pending = f.namer.onMessage(f.message(id), f.client);
-        try {
-          await Promise.race([firstPatch.promise, pending]);
-          expect(attempts).toBe(1);
-          await vi.advanceTimersByTimeAsync(2);
-          await pending;
-          expect(model).toHaveBeenCalledTimes(1);
-          expect(attempts).toBe(kind === "allowed" ? 2 : 1);
-          expect(f.patches).toEqual(
-            Array.from({ length: kind === "allowed" ? 2 : 1 }, () => ({
-              path: `/channels/${id}`,
-              body: { name: "Release planning" },
-            })),
-          );
-        } finally {
-          vi.useRealTimers();
-          f.namer.stop();
+        const f = fixture();
+        if (kind === "intent") {
+          f.gateway.options.intents = 0;
+        } else {
+          f.gateway.disconnect();
         }
+        const id = f.thread();
+        await f.namer.onMessage(f.message(id), f.client);
+        expect(model).not.toHaveBeenCalled();
+        expect(f.patches).toEqual([]);
       }),
   );
 

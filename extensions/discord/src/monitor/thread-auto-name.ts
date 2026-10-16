@@ -341,6 +341,7 @@ export class DiscordThreadAutoNamer {
     threadId: string,
     state: ThreadState,
     access: NamingAccess,
+    assertMembersCurrent: () => void,
   ): Promise<PreparedNamingRoute> {
     const policy = access.policy;
     const [{ prepareSessionBindingInspections }, { resolveDiscordConversationBindingRoute }] =
@@ -393,6 +394,7 @@ export class DiscordThreadAutoNamer {
       // Keep one prepared model/routing snapshot. A config change abandons this optional
       // attempt without refunding its claim or any reserved budget.
       const assertCurrent = (currentAccess = access) => {
+        assertMembersCurrent();
         if (
           !policy.isCurrent() ||
           !policy.isConfigCurrent() ||
@@ -450,53 +452,65 @@ export class DiscordThreadAutoNamer {
 
   private async renameThread(threadId: string, state: ThreadState, client: Client): Promise<void> {
     let route: PreparedNamingRoute | undefined;
+    let disposeMembers: (() => void) | undefined;
     try {
-      if (!(await this.canRename(state, threadId, client))) {
-        return;
-      }
-      const access = await this.access(threadId, state, client);
-      const policy = access?.policy;
-      if (
-        !access ||
-        !policy ||
-        !policy.isCurrent() ||
-        !policy.isConfigCurrent() ||
-        !this.active(threadId, state)
-      ) {
-        return;
-      }
-      route = await this.prepareNamingRoute(threadId, state, access);
-      route.assertCurrent();
-      if (
-        !(await this.state.reserveRename(state.parentId)) ||
-        !policy.isCurrent() ||
-        !this.active(threadId, state)
-      ) {
-        return;
-      }
-      route.assertCurrent();
-      const generated = await generateThreadTitle({
-        cfg: policy.cfg,
-        agentId: route.agentId,
-        messageText: buildTranscript(
-          state.messages.map((message) => formatTranscriptLine(message, this.params.botUserId)),
-        ),
-        maxSourceChars: MAX_TRANSCRIPT_CHARS,
-        timeoutMs: TITLE_GENERATION_TIMEOUT_MS,
-        abortSignal: this.generationAbort.signal,
-        assertCurrent: route.assertCurrent,
+      // Subscribe before fresh member reads; Gateway invalidation runs before listener queueing.
+      const members = client.retainMemberAuthority(
+        state.guildId,
+        [...(state.human ? [state.human] : []), ...state.messages]
+          .filter((message) => message.author.id !== this.params.botUserId)
+          .map((message) => message.author.id),
+      );
+      disposeMembers = members.dispose;
+      await withDiscordRequestAuthority(members.assertCurrent, async () => {
+        if (!(await this.canRename(state, threadId, client))) {
+          return;
+        }
+        const access = await this.access(threadId, state, client);
+        const policy = access?.policy;
+        if (
+          !access ||
+          !policy ||
+          !policy.isCurrent() ||
+          !policy.isConfigCurrent() ||
+          !this.active(threadId, state)
+        ) {
+          return;
+        }
+        route = await this.prepareNamingRoute(threadId, state, access, members.assertCurrent);
+        route.assertCurrent();
+        if (
+          !(await this.state.reserveRename(state.parentId)) ||
+          !policy.isCurrent() ||
+          !this.active(threadId, state)
+        ) {
+          return;
+        }
+        route.assertCurrent();
+        const generated = await generateThreadTitle({
+          cfg: policy.cfg,
+          agentId: route.agentId,
+          messageText: buildTranscript(
+            state.messages.map((message) => formatTranscriptLine(message, this.params.botUserId)),
+          ),
+          maxSourceChars: MAX_TRANSCRIPT_CHARS,
+          timeoutMs: TITLE_GENERATION_TIMEOUT_MS,
+          abortSignal: this.generationAbort.signal,
+          assertCurrent: route.assertCurrent,
+        });
+        const title = generated && sanitizeDiscordAutoNameTitle(generated);
+        if (!title || title === state.originalName || !this.active(threadId, state)) {
+          return;
+        }
+        await this.applyThreadTitle(threadId, state, client, title, route);
       });
-      const title = generated && sanitizeDiscordAutoNameTitle(generated);
-      if (!title || title === state.originalName || !this.active(threadId, state)) {
-        return;
-      }
-      await this.applyThreadTitle(threadId, state, client, title, route);
     } catch (error) {
       if (!(error instanceof DiscordError) || (error.status !== 403 && error.status !== 429)) {
         logVerbose(`discord: thread auto-name failed for ${threadId}`);
       }
     } finally {
       route?.dispose();
+      disposeMembers?.();
       if (this.threads.get(threadId) === state) {
         this.threads.delete(threadId);
       }

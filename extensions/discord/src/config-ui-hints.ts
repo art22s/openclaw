@@ -71,7 +71,7 @@ export const discordChannelConfigUiHints = {
   },
   "thread.autoName": {
     label: "Discord Thread Auto Naming",
-    help: "Rename new Discord threads after this many user/agent messages. true uses 5; 0 or false disables. Account settings override the channel-wide setting.",
+    help: "Rename new Discord threads after this many user/agent messages. true uses 5; 0 or false disables. Requires intents.guildMembers and Server Members Intent in Discord. Account settings override the channel-wide setting.",
   },
   "threadBindings.enabled": {
     label: "Discord Thread Binding Enabled",

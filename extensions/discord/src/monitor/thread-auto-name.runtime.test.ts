@@ -1,5 +1,10 @@
 import type { GatewayMessageCreateDispatchData } from "discord-api-types/v10";
-import { GuildMemberFlags, PermissionFlagsBits } from "discord-api-types/v10";
+import {
+  GatewayDispatchEvents,
+  GatewayIntentBits,
+  GuildMemberFlags,
+  PermissionFlagsBits,
+} from "discord-api-types/v10";
 import type { AgentHarness } from "openclaw/plugin-sdk/agent-harness";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { OpenKeyedStoreOptions } from "openclaw/plugin-sdk/plugin-state-runtime";
@@ -21,6 +26,7 @@ import {
 } from "openclaw/plugin-sdk/thread-bindings-session-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { Client } from "../internal/discord.js";
+import { GatewayPlugin } from "../internal/gateway.js";
 import { createDiscordLivePolicyReader } from "./live-policy.js";
 import { DiscordThreadAutoNamer } from "./thread-auto-name.js";
 
@@ -116,6 +122,7 @@ async function fixture(state: OpenClawTestState, routing?: RoutingScenario) {
         token: "synthetic-discord-token",
         groupPolicy: "allowlist",
         thread: { autoName: 1 },
+        intents: { guildMembers: true },
         guilds: { [GUILD]: { users: [USER], channels: { [PARENT]: {} } } },
       },
     },
@@ -284,6 +291,7 @@ export default {
     touchAsync: async () => {},
   };
   registerSessionBindingAdapterV2(bindingAdapter);
+  let currentRoles = routing === "role" ? [ROUTE_ROLE] : [];
   const client = new Client(
     {
       clientId: BOT,
@@ -311,7 +319,7 @@ export default {
           }
           if (path.startsWith(`/guilds/${GUILD}/members/`)) {
             return Response.json({
-              roles: routing === "role" && path.endsWith(`/${USER}`) ? [ROUTE_ROLE] : [],
+              roles: path.endsWith(`/${USER}`) ? currentRoles : [],
               flags: GuildMemberFlags.CompletedOnboarding,
             });
           }
@@ -333,6 +341,9 @@ export default {
     },
     {},
   );
+  const gateway = new GatewayPlugin({ intents: GatewayIntentBits.GuildMembers });
+  gateway.isConnected = true; // Fixed transport state; no live socket or credentials.
+  client.plugins.push(gateway);
   const readPolicy = createDiscordLivePolicyReader({
     cfg,
     readConfig: () => cfg,
@@ -405,6 +416,16 @@ export default {
     utilityFailure: (callback?: () => void) => {
       failUtility = true;
       afterUtilityFailure = callback;
+    },
+    updateMember: (userId = USER) => {
+      if (userId === USER) {
+        currentRoles = [];
+      }
+      void client.dispatchGatewayEvent(GatewayDispatchEvents.GuildMemberUpdate, {
+        guild_id: GUILD,
+        user: { id: userId },
+        roles: [],
+      });
     },
     rebind: () => {
       if (!currentBinding) {
@@ -526,6 +547,31 @@ describe("Discord auto-name through the conversation-label runtime", () => {
         expect(value.patches).toEqual([{ name: "Release planning" }]);
       }),
   );
+
+  it.each(["allowed", "revoked"] as const)(
+    "retains %s member authority during model preparation and fallback",
+    async (authority) =>
+      isolated(async (value) => {
+        value.prepare(() => value.updateMember(authority === "revoked" ? USER : "another-human"));
+        value.utilityFailure();
+        await value.run();
+        expect(value.preparations).toBeGreaterThan(0);
+        expect(value.dispatches.map(({ modelId }) => modelId)).toEqual(
+          authority === "revoked" ? [] : ["utility", "primary"],
+        );
+        expect(value.patches).toEqual(
+          authority === "revoked" ? [] : [{ name: "Release planning" }],
+        );
+      }, "role"),
+  );
+
+  it("blocks primary fallback after a native role revocation", async () =>
+    isolated(async (value) => {
+      value.utilityFailure(value.updateMember);
+      await value.run();
+      expect(value.dispatches.map(({ modelId }) => modelId)).toEqual(["utility"]);
+      expect(value.patches).toEqual([]);
+    }, "role"));
 
   it.each(["revoke", "stop"] as const)(
     "blocks real dispatch when %s occurs during runtime preparation",
