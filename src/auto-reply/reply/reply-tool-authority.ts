@@ -83,6 +83,7 @@ export function resolveReplyToolAuthorityContext(
   const model = route?.model ?? execution.model;
   const policy = resolveConversationCapabilityPolicy({
     requesterOrigin: execution.requesterOrigin,
+    operatorAuthority: snapshot.operatorAuthority ?? null,
     config: execution.config,
     sessionId: execution.sessionId,
     // Capability identity follows execution, not the independent sandbox policy owner.
@@ -229,8 +230,6 @@ function resolveFollowupRunToolAuthorityFingerprint(
         ? readToolAllowlistIntersection(snapshot.toolsAllow)
         : undefined,
       disableTools: snapshot.disableTools === true,
-      forceRestartSafeTools: snapshot.forceRestartSafeTools === true,
-      forceCodeModeTools: snapshot.forceCodeModeTools === true,
       sessionFile: execution.sessionFile,
       agentDir: execution.agentDir,
       workspaceDir: execution.workspaceDir,
