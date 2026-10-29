@@ -447,7 +447,7 @@ describe("gateway-hosted exec approvals", () => {
       const newName = "OPENCLAW_E2E_HOOK_SOURCE_NEW";
       const oldValue = "synthetic-old-hook-ingress-value";
       const newValue = "synthetic-new-hook-ingress-value";
-      const { config, configPath, operator, port, workspaceDir } = await startApprovalGateway(
+      const { config, operator, port, workspaceDir } = await startApprovalGateway(
         () => {
           setTestEnvValue(oldName, oldValue);
           setTestEnvValue(newName, newValue);
@@ -509,11 +509,11 @@ describe("gateway-hosted exec approvals", () => {
       // An approval still pending when hooks.token is reloaded to another env name.
       const markerPath = path.join(workspaceDir, "queued-across-reload");
       const queued = await queue("hook-token-queued", `touch ${JSON.stringify(markerPath)}`);
-      await fs.writeFile(
-        configPath,
-        `${JSON.stringify({ ...config, hooks: { enabled: true, token: `\${${newName}}` } }, null, 2)}\n`,
-        "utf8",
-      );
+      const before = await operator.request<{ hash: string }>("config.get", {});
+      await operator.request("config.patch", {
+        baseHash: before.hash,
+        raw: JSON.stringify({ hooks: { token: `\${${newName}}` } }),
+      });
       await vi.waitFor(async () => expect(await wake(newValue)).toBe(400), {
         timeout: 15_000,
         interval: 500,
