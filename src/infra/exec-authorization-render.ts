@@ -28,19 +28,22 @@ function renderBareShellToken(value: string): string {
 }
 
 function hasUnquotedShellExpansionSource(value: string): boolean {
-  let quote: "single" | "double" | null = null;
+  let quote: "single" | "double" | "ansi" | null = null;
   let escaped = false;
   let atWordStart = true;
+  let previousUnescapedDollar = false;
   for (const char of value) {
     if (escaped) {
       escaped = false;
+      previousUnescapedDollar = false;
       continue;
     }
     if (quote !== "single" && char === "\\") {
       escaped = true;
+      previousUnescapedDollar = false;
       continue;
     }
-    if (quote === "single") {
+    if (quote === "single" || quote === "ansi") {
       if (char === "'") {
         quote = null;
       }
@@ -53,9 +56,11 @@ function hasUnquotedShellExpansionSource(value: string): boolean {
       continue;
     }
     if (char === "'") {
-      quote = "single";
+      quote = previousUnescapedDollar ? "ansi" : "single";
+      previousUnescapedDollar = false;
       continue;
     }
+    previousUnescapedDollar = char === "$";
     if (char === '"') {
       quote = "double";
       continue;

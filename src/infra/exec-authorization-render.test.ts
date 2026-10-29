@@ -70,6 +70,12 @@ describe("exec authorization renderer", () => {
       "shell expansion in enforced arguments",
     ],
     ["cat ~/secret", "enforced", ["allowlist"], "shell expansion in enforced arguments"],
+    [
+      String.raw`test $'\0\''?v benign`,
+      "enforced",
+      ["safeBuiltins"],
+      "shell expansion in enforced arguments",
+    ],
     ["sh -c 'head -n 5'", "enforced", ["allowlist"], "shell quoting required in wrapper payload"],
     ["git diff | head", "safeBins", ["safeBins"], "segment metadata mismatch"],
   ])("fails closed for %s (%s)", async (command, mode, satisfiedBy, reason) => {
