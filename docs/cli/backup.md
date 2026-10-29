@@ -545,7 +545,9 @@ settings, registration identities, relay grants and durable blobs, is preserved.
 Restoring a redacted backup requires signing in or registering the affected
 integrations again; hosted media links whose bearer records were omitted must
 be recreated. Custom plugin payloads need their own credential classification;
-this policy does not inspect arbitrary JSON or blob contents for secrets.
+this policy does not inspect arbitrary JSON or blob contents for secrets. An
+unclassified custom plugin's `credentials` namespace remains included, for both
+JSON records and blobs.
 
 The backup manifest records omitted tables in `excludedTables` and omitted
 machine-state prefixes in `excludedConfigStateKeyPrefixes`. Restore reports

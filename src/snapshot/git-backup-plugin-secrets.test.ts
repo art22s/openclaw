@@ -67,6 +67,7 @@ it.each([true, false])(
     ] as const;
     const markers = credentials.map((_, index) => `synthetic-plugin-secret-${index}`);
     const blobSecret = "synthetic-plugin-blob-secret";
+    const publicBlob = "public-custom-plugin-data";
     withDatabase(database.path, (db) => {
       const insert = db.prepare(
         "INSERT INTO plugin_state_entries (plugin_id, namespace, entry_key, value_json, created_at) VALUES (?, ?, ?, ?, 1)",
@@ -89,12 +90,12 @@ it.each([true, false])(
           }),
         );
       }
-      db.prepare(
-        "INSERT INTO plugin_blob_entries (plugin_id, namespace, entry_key, metadata_json, blob, created_at) VALUES (?, ?, 'blob', '{}', ?, 1)",
-      ).run("zalouser", "credentials", Buffer.from(blobSecret));
-      db.prepare(
-        "INSERT INTO plugin_blob_entries (plugin_id, namespace, entry_key, metadata_json, blob, created_at) VALUES ('fixture', 'documents', 'document', '{}', ?, 1)",
-      ).run(Buffer.from("durable-document"));
+      const insertBlob = db.prepare(
+        "INSERT INTO plugin_blob_entries (plugin_id, namespace, entry_key, metadata_json, blob, created_at) VALUES (?, ?, ?, '{}', ?, 1)",
+      );
+      insertBlob.run("zalouser", "credentials", "blob", Buffer.from(blobSecret));
+      insertBlob.run("fixture", "documents", "document", Buffer.from("durable-document"));
+      insertBlob.run("fixture", "credentials", "public-metadata", Buffer.from(publicBlob));
     });
 
     const remote = path.join(root, "remote.git");
@@ -116,6 +117,7 @@ it.each([true, false])(
     expect.soft(stateRows.includes("synthetic-webhook-token")).toBe(!excludeSecrets);
     expect(blobRows.includes(Buffer.from(blobSecret).toString("hex"))).toBe(!excludeSecrets);
     expect(blobRows).toContain(Buffer.from("durable-document").toString("hex"));
+    expect(blobRows).toContain(Buffer.from(publicBlob).toString("hex"));
     for (const [plugin, namespace, key, value] of nonsecrets) {
       expect(stateRows).toContain(
         JSON.stringify({
@@ -149,9 +151,17 @@ it.each([true, false])(
       "SELECT value_json FROM plugin_state_entries WHERE plugin_id = 'active-memory'": [
         { value_json: '{"disabled":true}' },
       ],
-      "SELECT hex(blob) AS bytes FROM plugin_blob_entries WHERE plugin_id = 'fixture'": [
-        { bytes: Buffer.from("durable-document").toString("hex").toUpperCase() },
-      ],
+      "SELECT namespace, hex(blob) AS bytes FROM plugin_blob_entries WHERE plugin_id = 'fixture' ORDER BY namespace":
+        [
+          {
+            namespace: "credentials",
+            bytes: Buffer.from(publicBlob).toString("hex").toUpperCase(),
+          },
+          {
+            namespace: "documents",
+            bytes: Buffer.from("durable-document").toString("hex").toUpperCase(),
+          },
+        ],
     });
   },
 );
