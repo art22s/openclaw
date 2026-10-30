@@ -60,7 +60,8 @@ function hasUnquotedShellExpansionSource(value: string): boolean {
       previousUnescapedDollar = false;
       continue;
     }
-    previousUnescapedDollar = char === "$";
+    // Each $$ pair is a complete PID parameter; only an unmatched $ starts $'...'.
+    previousUnescapedDollar = char === "$" && !previousUnescapedDollar;
     if (char === '"') {
       quote = "double";
       continue;

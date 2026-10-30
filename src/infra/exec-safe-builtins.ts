@@ -59,7 +59,7 @@ function isSafePredicateBuiltinArgv(
   params: { requiresClosingBracket?: boolean; fallbackRawCheck: string; head: "test" | "[" },
 ): boolean {
   if (params.requiresClosingBracket) {
-    if (argv.at(-1) !== "]" && !params.fallbackRawCheck?.trim().endsWith("]")) {
+    if (argv.at(-1) !== "]" && !params.fallbackRawCheck.trim().endsWith("]")) {
       return false;
     }
   }
